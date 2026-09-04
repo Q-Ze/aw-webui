@@ -24,24 +24,32 @@ export interface DailyHourlyMatrix {
 }
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
-let cached: { at: number; nDays: number; promise: Promise<DailyHourlyMatrix> } | null = null;
+const cache = new Map<string, { at: number; promise: Promise<DailyHourlyMatrix> }>();
 
-/** Trailing-window activity matrix (canonical window events, per clock hour). */
-export function getDailyHourlyActivity(nDays: number): Promise<DailyHourlyMatrix> {
-  const now = Date.now();
-  if (cached && cached.nDays === nDays && now - cached.at < CACHE_TTL_MS) {
-    return cached.promise;
+/**
+ * Activity matrix for the nDays ending at endDate (default: today), so the
+ * charts can follow the date the user is browsing. Results are cached per
+ * (nDays, endDate) for a short TTL — flipping between dates is instant.
+ */
+export function getDailyHourlyActivity(nDays: number, endDate?: Date): Promise<DailyHourlyMatrix> {
+  const end = endDate || new Date();
+  const endKey = keyOf(new Date(end.getFullYear(), end.getMonth(), end.getDate()));
+  const cacheKey = `${nDays}|${endKey}`;
+  const hit = cache.get(cacheKey);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
+    return hit.promise;
   }
-  const promise = fetchDailyHourlyActivity(nDays);
-  cached = { at: now, nDays, promise };
+  const promise = fetchDailyHourlyActivity(
+    nDays,
+    new Date(end.getFullYear(), end.getMonth(), end.getDate())
+  );
+  cache.set(cacheKey, { at: Date.now(), promise });
   // Do not cache failures.
-  promise.catch(() => {
-    cached = null;
-  });
+  promise.catch(() => cache.delete(cacheKey));
   return promise;
 }
 
-async function fetchDailyHourlyActivity(nDays: number): Promise<DailyHourlyMatrix> {
+async function fetchDailyHourlyActivity(nDays: number, endDate: Date): Promise<DailyHourlyMatrix> {
   const bucketsStore = useBucketsStore();
   const categoryStore = useCategoryStore();
   await bucketsStore.ensureLoaded();
@@ -74,12 +82,10 @@ async function fetchDailyHourlyActivity(nDays: number): Promise<DailyHourlyMatri
   });
   q.push('RETURN = {"events": events};');
 
-  const today = new Date();
-  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const periods: string[] = [];
   const dayKeys: string[] = [];
   for (let i = nDays - 1; i >= 0; i--) {
-    const s = new Date(todayStart.getTime() - i * 86400000);
+    const s = new Date(endDate.getTime() - i * 86400000);
     const e = new Date(s.getTime() + 86400000);
     periods.push(toIso(s) + '/' + toIso(e));
     dayKeys.push(keyOf(s));

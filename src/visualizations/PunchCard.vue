@@ -2,7 +2,7 @@
 div
   svg.vis-svg(ref="svg", width="100%", :height="height + 4")
   div.small.text-muted(v-if="days > 0")
-    | Avg active minutes per hour · {{ days }} days, by weekday ({{ weekdayLabels[startOfWeek] }}-start)
+    | Avg active minutes per hour · {{ days }} days ending {{ endLabel }}, by weekday ({{ weekdayLabels[startOfWeek] }}-start)
   div.small.text-muted(v-else-if="loaded") No activity data for the past 60 days.
   div.small.text-muted(v-else) Loading…
 </template>
@@ -28,6 +28,7 @@ import _ from 'lodash';
 
 import { seconds_to_duration } from '~/util/time';
 import { getDailyHourlyActivity } from '~/util/hourlyMatrix';
+import { useActivityStore } from '~/stores/activity';
 
 const height = 168;
 const WINDOW_DAYS = 60;
@@ -44,24 +45,44 @@ export default {
   },
   data() {
     return {
+      activityStore: useActivityStore(),
       days: 0,
       loaded: false,
+      endLabel: '',
       weekdayLabels: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
     };
   },
+  watch: {
+    // Follow the browsed date: the window is the 60 days ending at it.
+    'activityStore.query_options.timeperiod': function () {
+      this.load();
+    },
+  },
   async mounted() {
-    try {
-      const { days, matrix } = await getDailyHourlyActivity(WINDOW_DAYS);
-      this.days = days.length;
-      if (days.length > 0) {
-        this.$nextTick(() => this.render(days, matrix));
-      }
-    } catch (e) {
-      console.error('aw-punchcard failed:', e);
-    }
-    this.loaded = true;
+    await this.load();
   },
   methods: {
+    async load() {
+      try {
+        const end = this.selectedDate();
+        this.endLabel = `${String(end.getMonth() + 1).padStart(2, '0')}/${String(
+          end.getDate()
+        ).padStart(2, '0')}`;
+        const { days, matrix } = await getDailyHourlyActivity(WINDOW_DAYS, end);
+        this.days = days.length;
+        if (days.length > 0) {
+          this.$nextTick(() => this.render(days, matrix));
+        }
+      } catch (e) {
+        console.error('aw-punchcard failed:', e);
+      }
+      this.loaded = true;
+    },
+    selectedDate(): Date {
+      const qo = useActivityStore().query_options;
+      const d = qo ? new Date(qo.timeperiod.start) : new Date();
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    },
     render(dayKeys: string[], matrix: number[][]) {
       const svgEl = this.$refs.svg as SVGSVGElement;
       if (!svgEl) return;

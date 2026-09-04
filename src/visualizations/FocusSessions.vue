@@ -80,6 +80,7 @@ export default {
   name: 'aw-focus-sessions',
   data() {
     return {
+      activityStore: useActivityStore(),
       loaded: false,
       sessions: null as FocusSession[] | null,
       // A 25min default is too strict for heavily-switching users (their

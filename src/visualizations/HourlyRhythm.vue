@@ -2,7 +2,7 @@
 div
   svg.vis-svg(ref="svg", width="100%", :height="height + 34")
   div.small.text-muted(v-if="days > 0")
-    | Avg active minutes per hour · past {{ days }} day{{ days === 1 ? '' : 's' }} (window/AFK-based)
+    | Avg active minutes per hour · {{ days }} day{{ days === 1 ? '' : 's' }} ending {{ endLabel }} (window/AFK-based)
     span(v-if="peak") · peak {{ peak.label }} ({{ peak.avg }})
   div.small.text-muted(v-else-if="loaded") No activity data for the past 30 days.
   div.small.text-muted(v-else) Loading…
@@ -24,6 +24,7 @@ import _ from 'lodash';
 
 import { seconds_to_duration } from '~/util/time';
 import { getDailyHourlyActivity } from '~/util/hourlyMatrix';
+import { useActivityStore } from '~/stores/activity';
 
 const height = 150;
 const WINDOW_DAYS = 30;
@@ -34,30 +35,54 @@ const WINDOW_DAYS = 30;
 export default {
   name: 'aw-hourly-rhythm',
   data() {
-    return { loaded: false, days: 0, peak: null as { label: string; avg: string } | null };
+    return {
+      activityStore: useActivityStore(),
+      loaded: false,
+      days: 0,
+      endLabel: '',
+      peak: null as { label: string; avg: string } | null,
+    };
+  },
+  watch: {
+    // Follow the browsed date: the window is the 30 days ending at it.
+    'activityStore.query_options.timeperiod': function () {
+      this.load();
+    },
   },
   async mounted() {
-    try {
-      // Shared 60-day fetch (the punchcard uses the full window); take the
-      // trailing 30 days locally so both cards hit one query via the cache.
-      const { days, matrix } = await getDailyHourlyActivity(60);
-      const keep = Math.min(WINDOW_DAYS, days.length);
-      const d = days.slice(-keep);
-      const m = matrix.slice(-keep);
-      this.days = d.length;
-      if (d.length > 0) {
-        const totals = new Array(24).fill(0);
-        m.forEach(hours => hours.forEach((min, h) => (totals[h] += min)));
-        const avg = totals.map(v => (v / d.length >= 0.5 ? (v / d.length) * 60 : 0));
-        this.peak = peakOf(avg);
-        this.$nextTick(() => this.render(avg));
-      }
-    } catch (e) {
-      console.error('aw-hourly-rhythm failed:', e);
-    }
-    this.loaded = true;
+    await this.load();
   },
   methods: {
+    async load() {
+      try {
+        // Shared 60-day fetch (the punchcard uses the full window); take the
+        // trailing 30 days locally so both cards hit one query via the cache.
+        const end = this.selectedDate();
+        this.endLabel = `${String(end.getMonth() + 1).padStart(2, '0')}/${String(
+          end.getDate()
+        ).padStart(2, '0')}`;
+        const { days, matrix } = await getDailyHourlyActivity(60, end);
+        const keep = Math.min(WINDOW_DAYS, days.length);
+        const d = days.slice(-keep);
+        const m = matrix.slice(-keep);
+        this.days = d.length;
+        if (d.length > 0) {
+          const totals = new Array(24).fill(0);
+          m.forEach(hours => hours.forEach((min, h) => (totals[h] += min)));
+          const avg = totals.map(v => (v / d.length >= 0.5 ? (v / d.length) * 60 : 0));
+          this.peak = peakOf(avg);
+          this.$nextTick(() => this.render(avg));
+        }
+      } catch (e) {
+        console.error('aw-hourly-rhythm failed:', e);
+      }
+      this.loaded = true;
+    },
+    selectedDate(): Date {
+      const qo = useActivityStore().query_options;
+      const d = qo ? new Date(qo.timeperiod.start) : new Date();
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    },
     render(avg: number[]) {
       const svgEl = this.$refs.svg as SVGSVGElement;
       if (!svgEl) return;

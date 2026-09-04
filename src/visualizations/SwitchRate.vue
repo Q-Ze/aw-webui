@@ -29,7 +29,11 @@ const height = 150;
 export default {
   name: 'aw-switch-rate',
   data() {
-    return { loaded: false, days: 0 };
+    return {
+      activityStore: useActivityStore(),
+      loaded: false,
+      days: 0,
+    };
   },
   watch: {
     'activityStore.query_options.timeperiod': function () {
