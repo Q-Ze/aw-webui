@@ -19,7 +19,12 @@ export function clipEventToHours(
   onSlice: (slice: HourSlice) => void
 ) {
   let cur = new Date(timestamp);
-  const end = new Date(cur.getTime() + (durationSeconds || 0) * 1000);
+  // Clip to the current moment: server-side merging extends the day's last
+  // not-afk heartbeat until the next afk event (or the period edge), which
+  // during watcher outages stretches segments hours into the night — even
+  // into the future. Everything past 'now' is certainly not real activity.
+  const endMs = Math.min(cur.getTime() + (durationSeconds || 0) * 1000, Date.now());
+  const end = new Date(endMs);
   while (cur < end) {
     const nextHour = new Date(cur);
     nextHour.setMinutes(0, 0, 0);

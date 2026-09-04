@@ -71,7 +71,7 @@ export default {
       if (nDays === 0) return null;
       const cells = minutes.map((row, dow) => {
         const n = dowDays[dow] || 1;
-        return row.map(v => (v / n >= 5 ? v / n : 0));
+        return row.map(v => (v / n >= 10 ? v / n : 0));
       });
       return { cells, max: d3.max(cells.flat()) as number, days: nDays };
     },
