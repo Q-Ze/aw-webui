@@ -67,7 +67,7 @@ import _ from 'lodash';
 import moment from 'moment';
 import Color from 'color';
 import { buildTooltip } from '../util/tooltip.js';
-import { getCategoryColorFromEvent, getColorFromString, getTitleAttr } from '../util/color';
+import { getCategoryColorFromEvent, getDeviceColor, getTitleAttr } from '../util/color';
 import { getSwimlane } from '../util/swimlane.js';
 import { IEvent } from '../util/interfaces';
 import { formatTimelineBucketLabelHtml, shortenBucketLabel } from '../util/timelineLabels';
@@ -113,6 +113,16 @@ export default {
         zoomMin: 1000 * 60, // 10min in milliseconds
         zoomMax: 1000 * 60 * 60 * 24 * 31 * 3, // about three months in milliseconds
         stack: false,
+        // vis-timeline pipes group content through an XSS filter that strips
+        // class/style attributes, which would strip the per-host lane dot
+        // (and the timeline-label class). Returning an element from
+        // groupTemplate bypasses that pass; the content strings are built
+        // from escaped bucket ids/hostnames in formatTimelineBucketLabelHtml.
+        groupTemplate: (group: any, _element: HTMLElement) => {
+          const container = document.createElement('span');
+          container.innerHTML = group.content || '';
+          return container;
+        },
         tooltip: {
           followMouse: true,
           overflowMethod: 'flip',
@@ -380,9 +390,19 @@ export default {
           // so lanes from different machines are distinguishable at a glance
           // even when their events are colored by app/category.
           if (host) {
-            const dotColor = getColorFromString(host);
+            const dotColor = getDeviceColor(
+              buckets.map(b => realHost(b) || ''),
+              host
+            );
+            const hostEscaped = host.replace(
+              /[&<>"']/g,
+              c =>
+                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[
+                  c
+                ] as string)
+            );
             label =
-              `<span class="aw-lane-dot" style="background:${dotColor};" title="${host}"></span>` +
+              `<span class="aw-lane-dot" style="background:${dotColor};" title="${hostEscaped}"></span>` +
               label;
           }
         }

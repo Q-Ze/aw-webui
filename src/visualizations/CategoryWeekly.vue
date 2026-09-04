@@ -1,10 +1,7 @@
 <template lang="pug">
 div
-  div.d-flex.flex-wrap.mb-1(v-if="series && series.length")
-    span.legend-item(v-for="s in series", :key="s.name", :title="s.name")
-      span.legend-dot(:style="{background: s.color}")
-      span {{ s.name }} · {{ s.totalShort }}
   svg.vis-svg(ref="svg", width="100%", :height="220 + 26")
+  div.small.text-muted.mt-1 Hover a bar segment to see the category
 </template>
 
 <style scoped lang="scss">
@@ -12,20 +9,8 @@ svg.vis-svg {
   display: block;
 }
 
-.legend-item {
-  display: inline-flex;
-  align-items: center;
+.small {
   font-size: 11.5px;
-  color: var(--aw-vis-text, #3c4257);
-  margin-right: 12px;
-  margin-bottom: 2px;
-}
-
-.legend-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 3px;
-  margin-right: 5px;
 }
 </style>
 
@@ -41,7 +26,6 @@ import { useCategoryStore } from '~/stores/categories';
 import { useSettingsStore } from '~/stores/settings';
 import { buildMultideviceHostParams } from '~/util/multidevice';
 import { seconds_to_duration } from '~/util/time';
-import { IEvent } from '~/util/interfaces';
 
 interface DayCat {
   day: string; // YYYY-MM-DD
@@ -157,8 +141,6 @@ export default {
           };
         })
         .filter(s => s.total > 0);
-      this.series = seriesInfo.map(({ name, color, totalShort }) => ({ name, color, totalShort }));
-
       this.$nextTick(() => this.render(stackData, seriesInfo));
     } catch (e) {
       console.error('aw-category-weekly failed:', e);

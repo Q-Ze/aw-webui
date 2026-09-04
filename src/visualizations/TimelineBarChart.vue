@@ -117,8 +117,12 @@ export default {
                   minutes = 0;
                   hours += 1;
                 }
-                const minutes_str = minutes.toString().padStart(2, '0');
-                return `${hours}:${minutes_str}`;
+                const dur =
+                  hours > 0 ? `${hours}h ${minutes.toString().padStart(2, '0')}m` : `${minutes}m`;
+                // dataset.label is the category name; without it the tooltip
+                // only showed a colored box + duration.
+                const label = context.dataset.label || '';
+                return `${label}: ${dur}`;
               },
             },
           },

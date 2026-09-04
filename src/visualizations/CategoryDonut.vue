@@ -1,59 +1,19 @@
 <template lang="pug">
-div.d-flex.align-items-center(v-if="slices && slices.length > 0")
-  svg(ref="svg", :height="size", :width="size", style="flex: 0 0 auto;")
-  div.legend.pl-3(style="flex: 1 1 auto; min-width: 0;")
-    div.legend-row(
-      v-for="s in slices",
-      :key="s.name",
-      :href="s.link",
-      @click="s.link && navigate(s.link)",
-      :style="{cursor: s.link ? 'pointer' : 'default'}",
-      @mouseenter="hoverSlice(s.name)",
-      @mouseleave="hoverSlice(null)"
-    )
-      span.legend-dot(:style="{background: s.color}")
-      span.legend-name(:title="s.name") {{ s.name }}
-      span.legend-value {{ s.durationShort }} · {{ s.pct }}%
+div(v-if="slices && slices.length > 0", style="position: relative;")
+  svg(ref="svg", :height="size", :width="size", style="display: block; margin: 0 auto;")
+  div.small.text-muted.text-center.mt-1(v-if="hoverSliceName")
+    | {{ hoverSliceName }}
 div(v-else)
   div.text-muted.pt-3(v-if="loaded") No category data for this period.
   div.text-muted.pt-3(v-else) Loading...
 </template>
 
 <style scoped lang="scss">
-.legend-row {
-  display: flex;
-  align-items: center;
-  padding: 2.5px 0;
-  font-size: 13px;
-  color: var(--aw-vis-text, #3c4257);
-
-  &:hover .legend-name {
-    text-decoration: underline;
-  }
-}
-
-.legend-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 3px;
-  flex: 0 0 auto;
-  margin-right: 8px;
-}
-
-.legend-name {
-  flex: 1 1 auto;
-  min-width: 0;
+.small {
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-right: 10px;
-}
-
-.legend-value {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-  color: var(--aw-vis-subtext, #6b7280);
-  font-size: 12px;
 }
 </style>
 
@@ -109,6 +69,11 @@ export default {
     totalDuration(): number {
       return this.events ? _.sumBy(this.events as IEvent[], 'duration') : 0;
     },
+    hoverSliceName(): string | null {
+      if (this.hoverName == null || !this.slices) return null;
+      const s = this.slices.find(x => x.name === this.hoverName);
+      return s ? s.name : null;
+    },
   },
   watch: {
     slices() {
@@ -159,9 +124,7 @@ export default {
         .append('path')
         .attr('fill', (d: d3.PieArcDatum<Slice>) => d.data.color)
         .attr('d', (d: d3.PieArcDatum<Slice>) => {
-          const arcGen = arc.outerRadius(
-            d.data.name === this.hoverName ? radius - 1 : radius - 5
-          );
+          const arcGen = arc.outerRadius(d.data.name === this.hoverName ? radius - 1 : radius - 5);
           return arcGen(d) || '';
         })
         .style('cursor', 'pointer')
@@ -195,10 +158,18 @@ export default {
         .attr('dy', '1.25em')
         .attr('font-size', 11.5)
         .style('fill', 'var(--aw-vis-subtext, #6B7280)')
-        .text(centerText ? centerText.pct + '%' : this.slices.length + ' categories');
+        .text(
+          centerText
+            ? centerText.pct + '% · ' + truncate(centerText.name, 18)
+            : this.slices.length + ' categories'
+        );
     },
   },
 };
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
 
 function shortDuration(seconds: number): string {
   const s = seconds_to_duration(seconds);

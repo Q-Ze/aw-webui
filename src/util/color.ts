@@ -13,7 +13,7 @@ const COLOR_UNCAT = '#CCC';
 // A 12-color harmonious palette (Material 200-level tones, so foreground text
 // stays readable on top of bars filled with these colors). Adjacent hues are
 // deliberately distinct so app/category colors don't blur together in lists.
-const palette = [
+export const palette = [
   '#90CAF9', // blue
   '#FFE082', // yellow
   '#EF9A9A', // red
@@ -190,4 +190,15 @@ export function getCategoryColorFromEvent(bucket: IBucket, e: IEvent) {
   }
 
   return getColorFromString(getTitleAttr(bucket, e));
+}
+
+/**
+ * A stable, distinguishable color for a device/host. Assigns palette colors
+ * by position in the sorted host list (not by name hash) so that the hosts
+ * visible at the same time always get different colors.
+ */
+export function getDeviceColor(hostnames: string[], hostname: string): string {
+  const uniq = [...new Set(hostnames.filter(Boolean))].sort();
+  const idx = Math.max(uniq.indexOf(hostname), 0);
+  return palette[idx % palette.length];
 }

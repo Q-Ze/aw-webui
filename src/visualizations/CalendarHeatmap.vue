@@ -17,15 +17,15 @@ import * as d3 from 'd3';
 import _ from 'lodash';
 import moment from 'moment';
 
-import queries from '~/queries';
 import { getClient } from '~/util/awclient';
 import { useBucketsStore } from '~/stores/buckets';
 import { useSettingsStore } from '~/stores/settings';
 import { seconds_to_duration } from '~/util/time';
 
-// Sequential green scale, light -> saturated. Fixed hexes read fine on both
-// the light card background and the dark card background.
-const HEAT_COLORS = ['#E8F0E9', '#C6E1C9', '#9CCDA3', '#6FB97B', '#47A257', '#2E8843', '#1B6E31'];
+// Sequential green scale, light -> saturated, with strong steps between
+// levels so adjacent ranks are clearly distinguishable. Fixed hexes read
+// fine on both the light and dark card backgrounds.
+const HEAT_COLORS = ['#EAF2EC', '#C8E5CD', '#93CFA5', '#57AE74', '#2E8B57', '#1E6B40'];
 
 export default {
   name: 'aw-calendar-heatmap',
@@ -80,8 +80,10 @@ export default {
       const data = await getClient().query(days, q, { name: 'heatmapQuery' });
       const byDate: Record<string, number> = {};
       _.each(days, (day, i) => {
+        // aw-client returns one object per period ({duration}); accept the
+        // raw-REST [{duration}] shape as well.
         const res = data[i];
-        const dur = res && res[0] && res[0].duration ? res[0].duration : 0;
+        const dur = (res && (res.duration ?? (res[0] && res[0].duration) ?? 0)) || 0;
         byDate[moment(day.split('/')[0]).format('YYYY-MM-DD')] = dur;
       });
       this.byDate = byDate;
@@ -106,11 +108,24 @@ export default {
       const topPad = 16;
 
       const values = Object.values(this.byDate) as number[];
-      const maxDur = d3.max(values) || 1;
+      // Color by rank among ACTIVE days, not by value over [0, max]: raw
+      // durations cluster (most days 2–10h, a few outliers near 24h), so a
+      // linear scale paints nearly everything the same lightest shade.
+      // Quantile thresholds over the non-zero days spread the ramps evenly;
+      // zero-activity days stay visually empty (track color).
+      const active = values.filter(v => v > 0).sort(d3.ascending);
+      const thresholds = [0.25, 0.5, 0.75, 0.9]
+        .map(q => d3.quantile(active, q) as number)
+        .filter((v, i, arr) => v > 0 && (i === 0 || v > arr[i - 1]));
       const color = d3
-        .scaleQuantize<string>()
-        .domain([0, Math.max(maxDur, 1)])
-        .range(HEAT_COLORS);
+        .scaleThreshold<number, string>()
+        .domain(thresholds)
+        .range(HEAT_COLORS.slice(0, thresholds.length + 1));
+      const trackFill = 'var(--aw-vis-track, #EDF1F6)';
+
+      // Fast custom tooltip (native <title> tooltips are too slow to feel
+      // responsive on a grid like this).
+      const tooltip = d3.select(el).append('div').attr('class', 'aw-vis-tooltip');
 
       // Grid: columns are weeks (Sunday-start), rows are weekdays.
       const today = moment().startOf('day');
@@ -120,12 +135,12 @@ export default {
 
       let week = 0;
       for (let d = start.clone(); d.isSameOrBefore(today); d.add(1, 'day')) {
-        if (d.isBefore(start)) continue;
         const col = week;
         const row = d.day();
         const key = d.format('YYYY-MM-DD');
         const dur = this.byDate[key] || 0;
         if (d.day() === 6) week++;
+        const hasData = this.byDate[key] !== undefined && !d.isAfter(today);
 
         const rect = g
           .append('rect')
@@ -134,10 +149,18 @@ export default {
           .attr('width', cell)
           .attr('height', cell)
           .attr('rx', 2.5)
-          .attr('fill', this.byDate[key] !== undefined ? color(dur) : 'transparent')
-          .style('cursor', 'pointer');
-        if (this.byDate[key] !== undefined) {
+          .attr('fill', hasData ? (dur > 0 ? color(dur) : trackFill) : 'transparent')
+          .style('cursor', hasData ? 'pointer' : 'default');
+        if (hasData) {
           rect
+            .on('mousemove', (event: MouseEvent) => {
+              const [mx, my] = d3.pointer(event, el);
+              tooltip
+                .classed('aw-vis-tooltip--visible', true)
+                .style('left', Math.min(mx + 12, el.clientWidth - 130) + 'px')
+                .style('top', my - 34 + 'px')
+                .html(`<b>${key}</b><br>${dur > 0 ? seconds_to_duration(dur) : 'no activity'}`);
+            })
             .on('mouseenter', function () {
               d3.select(this)
                 .attr('stroke', 'var(--aw-vis-subtext, #6B7280)')
@@ -145,9 +168,8 @@ export default {
             })
             .on('mouseleave', function () {
               d3.select(this).attr('stroke', null);
-            })
-            .append('title')
-            .text(`${key} · ${dur > 0 ? seconds_to_duration(dur) : 'no activity'}`);
+              tooltip.classed('aw-vis-tooltip--visible', false);
+            });
         }
       }
       const totalWeeks = week + 1;
