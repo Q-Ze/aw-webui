@@ -7,6 +7,7 @@ import _ from 'lodash';
 
 import { getClient } from '~/util/awclient';
 import { useBucketsStore } from '~/stores/buckets';
+import { useSettingsStore } from '~/stores/settings';
 import { useCategoryStore } from '~/stores/categories';
 import { buildMultideviceHostParams } from '~/util/multidevice';
 import { IEvent } from '~/util/interfaces';
@@ -31,6 +32,12 @@ export async function fetchCategorizedWindowEvents(
   const bucketsStore = useBucketsStore();
   const categoryStore = useCategoryStore();
   await bucketsStore.ensureLoaded();
+  // Categories come from server settings; loading is sync but must happen
+  // after settings are in, or categorize() gets an empty rule set and every
+  // event lands in Uncategorized.
+  const settingsStore = useSettingsStore();
+  await settingsStore.ensureLoaded();
+  categoryStore.load();
 
   const { host_params, hosts_with_buckets } = buildMultideviceHostParams(
     bucketsStore.hosts.filter(h => h && !h.startsWith('fakedata')),

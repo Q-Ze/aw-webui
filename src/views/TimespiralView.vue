@@ -49,12 +49,20 @@ export default {
     async load() {
       this.loading = true;
       try {
-        this.events = await fetchCategorizedWindowEvents(
+        const evts = await fetchCategorizedWindowEvents(
           moment()
             .startOf('day')
             .subtract(this.days - 1, 'days'),
           moment()
         );
+        // eslint-disable-next-line no-console
+        console.log(
+          '[timespiral] events:',
+          evts.length,
+          'first:',
+          JSON.stringify(evts[0]).slice(0, 250)
+        );
+        this.events = evts;
       } catch (e) {
         console.error('timespiral failed:', e);
         this.events = [];

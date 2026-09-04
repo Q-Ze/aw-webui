@@ -24,10 +24,10 @@ svg.vis-svg {
 <script lang="ts">
 import * as d3 from 'd3';
 import _ from 'lodash';
-import moment from 'moment';
 
 import { IEvent } from '~/util/interfaces';
 import { seconds_to_duration } from '~/util/time';
+import { clipEventToHours } from '~/util/hourclip';
 
 const height = 168;
 
@@ -49,28 +49,30 @@ export default {
     grid(): { cells: number[][]; max: number; days: number } | null {
       if (!this.history) return null;
       const minutes: number[][] = _.range(7).map(() => new Array(24).fill(0));
-      const daysSeen = new Set<string>();
+      // Per-weekday day counts: a Monday 10:00 cell must be averaged over
+      // the number of Mondays in the history, not over all days (else every
+      // cell shrinks ~7x and drowns under the noise threshold).
+      const dowDays = new Array(7).fill(0);
+      const seenDates = new Set<string>();
       _.each(this.history as Record<string, IEvent[]>, events => {
         _.each(events || [], e => {
-          const start = moment(e.timestamp);
-          const end = start.clone().add(e.duration, 'seconds');
-          daysSeen.add(start.format('YYYY-MM-DD'));
-          // Clip the event into its hours and credit the weekday of the day
-          // the event starts on (simple, matches how people read the chart).
-          let cursor = start.clone();
-          while (cursor.isBefore(end)) {
-            const nextHour = cursor.clone().add(1, 'hour').startOf('hour');
-            const segEnd = moment.min(end, nextHour);
-            const secs = segEnd.diff(cursor, 'seconds', true);
-            const dow = (start.day() - this.startOfWeek + 7) % 7;
-            minutes[dow][cursor.hour()] += secs / 60;
-            cursor = segEnd;
-          }
+          clipEventToHours(e.timestamp, e.duration || 0, slice => {
+            const key = slice.date.toDateString();
+            if (!seenDates.has(key)) {
+              seenDates.add(key);
+              dowDays[(slice.date.getDay() - this.startOfWeek + 7) % 7] += 1;
+            }
+            const dow = (slice.date.getDay() - this.startOfWeek + 7) % 7;
+            minutes[dow][slice.hour] += slice.seconds / 60;
+          });
         });
       });
-      const nDays = daysSeen.size;
+      const nDays = seenDates.size;
       if (nDays === 0) return null;
-      const cells = minutes.map(row => row.map(v => v / nDays));
+      const cells = minutes.map((row, dow) => {
+        const n = dowDays[dow] || 1;
+        return row.map(v => (v / n >= 5 ? v / n : 0));
+      });
       return { cells, max: d3.max(cells.flat()) as number, days: nDays };
     },
   },

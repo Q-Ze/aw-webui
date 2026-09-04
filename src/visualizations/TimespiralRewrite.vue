@@ -25,11 +25,11 @@ div.timespiral-wrap(ref="wrap")
 // analysis query.
 import * as d3 from 'd3';
 import _ from 'lodash';
-import moment from 'moment';
 
 import { IEvent } from '~/util/interfaces';
 import { getCategoryColorFromString } from '~/util/color';
 import { seconds_to_duration } from '~/util/time';
+import { clipEventToHours, dateKey, daysBetween, startOfToday } from '~/util/hourclip';
 
 interface Segment {
   dayIndex: number; // 0 = most recent day
@@ -51,34 +51,24 @@ export default {
   computed: {
     segments(): Segment[] {
       const byCell: Record<string, Segment> = {};
-      const today = moment().startOf('day');
+      const today = startOfToday();
       for (const e of this.events as IEvent[]) {
         if (!e.data || !e.data['$category']) continue;
         const cat = (e.data['$category'] as string[]).join(' > ');
-        const start = moment(e.timestamp);
-        const end = start.clone().add(e.duration, 'seconds');
-        let cursor = start.clone();
-        while (cursor.isBefore(end)) {
-          const nextHour = cursor.clone().add(1, 'hour').startOf('hour');
-          const segEnd = moment.min(end, nextHour);
-          const secs = segEnd.diff(cursor, 'seconds', true);
-          if (secs > 0) {
-            const dayKey = cursor.format('YYYY-MM-DD');
-            const dayIndex = today.diff(cursor.startOf('day'), 'days');
-            if (dayIndex >= 0 && dayIndex < this.days) {
-              const key = `${dayKey}|${cursor.hour()}|${cat}`;
-              byCell[key] = byCell[key] || {
-                dayIndex,
-                dayKey,
-                hour: cursor.hour(),
-                category: cat,
-                seconds: 0,
-              };
-              byCell[key].seconds += secs;
-            }
-          }
-          cursor = segEnd;
-        }
+        clipEventToHours(e.timestamp, e.duration, slice => {
+          if (slice.seconds < 30) return; // noise: sub-30s slivers add clutter, not signal
+          const dayIndex = daysBetween(slice.date, today);
+          if (dayIndex < 0 || dayIndex >= this.days) return;
+          const key = `${dateKey(slice.date)}|${slice.hour}|${cat}`;
+          byCell[key] = byCell[key] || {
+            dayIndex,
+            dayKey: dateKey(slice.date),
+            hour: slice.hour,
+            category: cat,
+            seconds: 0,
+          };
+          byCell[key].seconds += slice.seconds;
+        });
       }
       return _.values(byCell);
     },
@@ -124,7 +114,6 @@ export default {
       const g = svg.append('g').attr('transform', `translate(${cx},${cy})`);
 
       // Subtle ring separators + day labels for every other ring.
-      const today = moment().startOf('day');
       for (let d = 0; d < nRings; d++) {
         const r = ringFor(d);
         g.append('circle')
@@ -134,8 +123,10 @@ export default {
           .attr('stroke-width', 0.5)
           .attr('pointer-events', 'none');
         if (d % 2 === 0 || nRings <= 7) {
-          const date = today.clone().subtract(d, 'days');
-          const lbl = date.format('MM/DD');
+          const date = new Date(startOfToday().getTime() - d * 86400000);
+          const lbl = `${String(date.getMonth() + 1).padStart(2, '0')}/${String(
+            date.getDate()
+          ).padStart(2, '0')}`;
           const lg = g
             .append('g')
             .attr('transform', `rotate(${((-Math.PI / 2 + Math.PI / 2) * 180) / Math.PI})`);

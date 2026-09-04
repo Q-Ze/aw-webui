@@ -15,27 +15,19 @@ svg.vis-svg {
 <script lang="ts">
 import * as d3 from 'd3';
 import _ from 'lodash';
-import moment from 'moment';
 
 import { seconds_to_duration } from '~/util/time';
 import { IEvent } from '~/util/interfaces';
+import { clipEventToHours } from '~/util/hourclip';
 
 const height = 150;
 
-// Distribution of a not-afk event's duration into the hour-of-day buckets it
-// spans. Events longer than an hour get split across hours; the first/last
-// partial hours get their clipped share.
+// Distribute a not-afk event's duration into the local clock hours it
+// spans, via the shared native-Date clipper.
 function addEventToHours(e: IEvent, hours: number[]) {
-  const start = moment(e.timestamp);
-  const end = start.clone().add(e.duration, 'seconds');
-  let cursor = start.clone();
-  while (cursor.isBefore(end)) {
-    const nextHour = cursor.clone().add(1, 'hour').startOf('hour');
-    const segEnd = moment.min(end, nextHour);
-    const secs = segEnd.diff(cursor, 'seconds', true);
-    if (secs > 0) hours[cursor.hour()] += secs;
-    cursor = segEnd;
-  }
+  clipEventToHours(e.timestamp, e.duration || 0, slice => {
+    hours[slice.hour] += slice.seconds;
+  });
 }
 
 export default {
@@ -57,7 +49,10 @@ export default {
         _.each(events, e => addEventToHours(e, hours));
       });
       if (nDays === 0) return null;
-      return { avg: hours.map(h => h / nDays), days: nDays };
+      return {
+        avg: hours.map(h => (h / nDays >= 30 ? h / nDays : 0)),
+        days: nDays,
+      };
     },
   },
   watch: {
