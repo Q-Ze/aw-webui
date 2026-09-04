@@ -1,6 +1,6 @@
 <template lang="pug">
 div(v-if="slices && slices.length > 0", style="position: relative;")
-  svg(ref="svg", :height="size", :width="size", style="display: block; margin: 0 auto;")
+  svg(ref="svg", :width="size", :height="size", :viewBox="`0 0 ${size} ${size}`", style="display: block; margin: 0 auto; max-width: 100%;")
   div.small.text-muted.text-center.mt-1(v-if="hoverSliceName")
     | {{ hoverSliceName }}
 div(v-else)
@@ -25,7 +25,6 @@ import { useCategoryStore } from '~/stores/categories';
 import { seconds_to_duration } from '~/util/time';
 import { IEvent } from '~/util/interfaces';
 
-const size = 190;
 const thickness = 30;
 
 interface Slice {
@@ -43,7 +42,14 @@ export default {
     events: { type: Array, default: null },
   },
   data() {
-    return { loaded: false, hoverName: null as string | null };
+    return {
+      // Exposed to the template: a module-level const is not reachable from
+      // the template, which silently left the svg at the default 300x150 and
+      // clipped the bottom of the chart.
+      size: 190,
+      loaded: false,
+      hoverName: null as string | null,
+    };
   },
   computed: {
     // NOTE: slices and totalDuration must not read each other (circular
@@ -77,15 +83,18 @@ export default {
   },
   watch: {
     slices() {
-      this.render();
+      // $nextTick: the v-if branch above creates the <svg> in the same
+      // update; without waiting for the patch, $refs.svg is still undefined
+      // and the render silently never happens.
+      this.$nextTick(() => this.render());
     },
     hoverName() {
-      this.render();
+      this.updateHover();
     },
   },
   mounted() {
     this.loaded = this.events != null;
-    this.render();
+    this.$nextTick(() => this.render());
   },
   methods: {
     navigate(href: string) {
@@ -102,7 +111,7 @@ export default {
       svgEl.innerHTML = '';
 
       const svg = d3.select(svgEl);
-      const radius = size / 2;
+      const radius = this.size / 2;
       const g = svg.append('g').attr('transform', `translate(${radius},${radius})`);
 
       const pie = d3
@@ -114,6 +123,7 @@ export default {
       const arc = d3
         .arc<d3.PieArcDatum<Slice>>()
         .innerRadius(radius - thickness)
+        .outerRadius(radius - 3)
         .cornerRadius(4);
 
       const arcs = pie(this.slices);
@@ -123,14 +133,9 @@ export default {
         .enter()
         .append('path')
         .attr('fill', (d: d3.PieArcDatum<Slice>) => d.data.color)
-        .attr('d', (d: d3.PieArcDatum<Slice>) => {
-          const arcGen = arc.outerRadius(d.data.name === this.hoverName ? radius - 1 : radius - 5);
-          return arcGen(d) || '';
-        })
+        .attr('d', (d: d3.PieArcDatum<Slice>) => arc(d) || '')
         .style('cursor', 'pointer')
-        .style('opacity', (d: d3.PieArcDatum<Slice>) =>
-          this.hoverName && d.data.name !== this.hoverName ? 0.45 : 1
-        )
+        .style('transition', 'opacity 0.12s ease')
         .on('click', (event: MouseEvent, d: d3.PieArcDatum<Slice>) =>
           this.navigate(d.data.link || '')
         )
@@ -144,23 +149,45 @@ export default {
         );
 
       // Center label: hovered category, else total.
-      const centerText =
-        this.hoverName != null ? this.slices.find(s => s.name === this.hoverName) : null;
       g.append('text')
+        .attr('class', 'donut-center-main')
         .attr('text-anchor', 'middle')
         .attr('dy', '-0.15em')
         .attr('font-size', 17)
         .attr('font-weight', 600)
-        .style('fill', 'var(--aw-vis-text, #3C4257)')
-        .text(centerText ? centerText.durationShort : shortDuration(this.totalDuration));
+        .style('fill', 'var(--aw-vis-text, #3C4257)');
       g.append('text')
+        .attr('class', 'donut-center-sub')
         .attr('text-anchor', 'middle')
         .attr('dy', '1.25em')
         .attr('font-size', 11.5)
-        .style('fill', 'var(--aw-vis-subtext, #6B7280)')
+        .style('fill', 'var(--aw-vis-subtext, #6B7280)');
+
+      this.updateHover();
+    },
+    // Hover updates only tweak path opacity and the two center labels — no
+    // full SVG rebuild, so hovering stays smooth even with many slices.
+    updateHover() {
+      const svgEl = this.$refs.svg as SVGSVGElement;
+      if (!svgEl || !this.slices) return;
+      const svg = d3.select(svgEl);
+
+      svg
+        .selectAll('path')
+        .style('opacity', (d: any) =>
+          this.hoverName && d.data.name !== this.hoverName ? 0.45 : 1
+        );
+
+      const center =
+        this.hoverName != null ? this.slices.find(s => s.name === this.hoverName) : null;
+      svg
+        .select('.donut-center-main')
+        .text(center ? center.durationShort : shortDuration(this.totalDuration));
+      svg
+        .select('.donut-center-sub')
         .text(
-          centerText
-            ? centerText.pct + '% · ' + truncate(centerText.name, 18)
+          center
+            ? center.pct + '% · ' + truncate(center.name, 18)
             : this.slices.length + ' categories'
         );
     },
