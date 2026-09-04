@@ -2,13 +2,19 @@
 div
   svg.vis-svg(ref="svg", width="100%", :height="height + 34")
   div.small.text-muted(v-if="days > 0")
-    | Avg per hour, past {{ days }} day{{ days === 1 ? '' : 's' }}
+    | Avg active minutes per hour · past {{ days }} day{{ days === 1 ? '' : 's' }} (window/AFK-based)
     span(v-if="peak") · peak {{ peak.label }} ({{ peak.avg }})
+  div.small.text-muted(v-else-if="loaded") No activity data for the past 30 days.
+  div.small.text-muted(v-else) Loading…
 </template>
 
 <style scoped lang="scss">
 svg.vis-svg {
   display: block;
+}
+
+.small {
+  font-size: 12px;
 }
 </style>
 
@@ -17,97 +23,59 @@ import * as d3 from 'd3';
 import _ from 'lodash';
 
 import { seconds_to_duration } from '~/util/time';
-import { IEvent } from '~/util/interfaces';
-import { clipEventToHours } from '~/util/hourclip';
+import { getDailyHourlyActivity } from '~/util/hourlyMatrix';
 
 const height = 150;
+const WINDOW_DAYS = 30;
 
-// Distribute a not-afk event's duration into the local clock hours it
-// spans, via the shared native-Date clipper.
-function addEventToHours(e: IEvent, hours: number[]) {
-  clipEventToHours(e.timestamp, e.duration || 0, slice => {
-    hours[slice.hour] += slice.seconds;
-  });
-}
-
+// Chart data is a trailing-window average of canonical (window ∩ not-afk)
+// activity — the same source as the Timeline barchart — not the AFK
+// store's merged history. It does not depend on the selected date.
 export default {
   name: 'aw-hourly-rhythm',
-  props: {
-    history: { type: Object, default: null }, // Record<period_str, IEvent[]>
-  },
   data() {
-    return { days: 0, peak: null as { label: string; avg: string } | null };
+    return { loaded: false, days: 0, peak: null as { label: string; avg: string } | null };
   },
-  computed: {
-    hourlyStats(): { avg: number[]; days: number } | null {
-      if (!this.history) return null;
-      // active.history accumulates a ±15d window around every date the user
-      // browses; without a cap the day count (and the "past N days" label)
-      // keeps growing as you navigate. Restrict to the trailing 30 days.
-      const now = new Date();
-      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-      const cutoff = todayStart - 29 * 86400000;
-      const hours = new Array(24).fill(0);
-      let nDays = 0;
-      _.each(this.history as Record<string, IEvent[]>, (events, key) => {
-        const startMs = new Date(key.split('/')[0]).getTime();
-        if (!(startMs >= cutoff && startMs <= todayStart + 86400000)) return;
-        if (!events || events.length === 0) return;
-        nDays += 1;
-        _.each(events, e => addEventToHours(e, hours));
-      });
-      if (nDays === 0) return null;
-      return {
-        avg: hours.map(h => (h / nDays >= 30 ? h / nDays : 0)),
-        days: nDays,
-      };
-    },
-  },
-  watch: {
-    history() {
-      this.render();
-    },
-  },
-  mounted() {
-    this.render();
+  async mounted() {
+    try {
+      // Shared 60-day fetch (the punchcard uses the full window); take the
+      // trailing 30 days locally so both cards hit one query via the cache.
+      const { days, matrix } = await getDailyHourlyActivity(60);
+      const keep = Math.min(WINDOW_DAYS, days.length);
+      const d = days.slice(-keep);
+      const m = matrix.slice(-keep);
+      this.days = d.length;
+      if (d.length > 0) {
+        const totals = new Array(24).fill(0);
+        m.forEach(hours => hours.forEach((min, h) => (totals[h] += min)));
+        const avg = totals.map(v => (v / d.length >= 0.5 ? (v / d.length) * 60 : 0));
+        this.peak = peakOf(avg);
+        this.$nextTick(() => this.render(avg));
+      }
+    } catch (e) {
+      console.error('aw-hourly-rhythm failed:', e);
+    }
+    this.loaded = true;
   },
   methods: {
-    render() {
+    render(avg: number[]) {
       const svgEl = this.$refs.svg as SVGSVGElement;
       if (!svgEl) return;
       svgEl.innerHTML = '';
-      const stats = this.hourlyStats;
-      this.days = stats ? stats.days : 0;
-      this.peak = null;
-      if (!stats) {
-        d3.select(svgEl)
-          .append('text')
-          .attr('x', 4)
-          .attr('y', 24)
-          .attr('font-size', 14)
-          .style('fill', 'var(--aw-vis-subtext, #6B7280)')
-          .text('No activity history for this period yet.');
-        return;
-      }
-      const data = stats.avg;
-
       const svg = d3.select(svgEl);
-      const el = svgEl.parentElement as HTMLElement;
-      const width = Math.max(el.clientWidth - 4, 260);
+      const width = Math.max((svgEl.parentElement as HTMLElement).clientWidth - 4, 260);
       const margin = { top: 10, right: 8, bottom: 26, left: 34 };
       const iw = width - margin.left - margin.right;
       const ih = height - margin.top - margin.bottom;
-
       const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
 
       const x = d3.scalePoint<number>().domain(_.range(24)).range([0, iw]).padding(0.5);
       const y = d3
         .scaleLinear()
-        .domain([0, Math.max(...data, 0)])
+        .domain([0, Math.max(...avg, 60)])
         .nice()
         .range([ih, 0]);
 
-      // Gridlines
       g.append('g')
         .call(
           d3
@@ -130,7 +98,6 @@ export default {
         .attr('font-size', 10.5)
         .style('color', 'var(--aw-vis-subtext, #6B7280)');
 
-      // Smooth curve through the 24 hourly averages.
       const line = d3
         .line<number>()
         .x((_v: number, i: number) => x(i) as number)
@@ -162,17 +129,15 @@ export default {
         .attr('stop-color', '#5B8DEF')
         .attr('stop-opacity', 0.02);
 
-      g.append('path').datum(data).attr('fill', 'url(#aw-rhythm-grad)').attr('d', area);
-
+      g.append('path').datum(avg).attr('fill', 'url(#aw-rhythm-grad)').attr('d', area);
       g.append('path')
-        .datum(data)
+        .datum(avg)
         .attr('fill', 'none')
         .attr('stroke', '#5B8DEF')
         .attr('stroke-width', 2)
         .attr('stroke-linecap', 'round')
         .attr('d', line);
 
-      // Hover dots + guide
       const dot = g
         .append('circle')
         .attr('r', 3.5)
@@ -192,22 +157,18 @@ export default {
         .style('fill', 'var(--aw-vis-text, #3C4257)')
         .style('opacity', 0);
 
-      const overlay = g
-        .append('rect')
+      g.append('rect')
         .attr('x', 0)
         .attr('y', 0)
         .attr('width', iw)
         .attr('height', ih)
         .style('fill', 'transparent')
-        .style('cursor', 'crosshair');
-
-      overlay
+        .style('cursor', 'crosshair')
         .on('mousemove', (event: MouseEvent) => {
           const [mx] = d3.pointer(event);
-          // Nearest hour for the pointer position.
           const step = iw / 23;
           const h = Math.max(0, Math.min(23, Math.round(mx / step)));
-          const v = data[h];
+          const v = avg[h];
           dot
             .style('opacity', 1)
             .attr('cx', x(h) as number)
@@ -229,19 +190,19 @@ export default {
           guide.style('opacity', 0);
           label.style('opacity', 0);
         });
-
-      // Peak hour annotation
-      const peakHour = data.indexOf(Math.max(...data));
-      this.peak = {
-        label: `${String(peakHour).padStart(2, '0')}:00–${String((peakHour + 1) % 24).padStart(
-          2,
-          '0'
-        )}:00`,
-        avg: shortDur(data[peakHour]),
-      };
     },
   },
 };
+
+function peakOf(avg: number[]): { label: string; avg: string } | null {
+  const max = Math.max(...avg);
+  if (max <= 0) return null;
+  const h = avg.indexOf(max);
+  return {
+    label: `${String(h).padStart(2, '0')}:00–${String((h + 1) % 24).padStart(2, '0')}:00`,
+    avg: shortDur(max),
+  };
+}
 
 function shortDur(seconds: number): string {
   const m = seconds_to_duration(seconds).match(/^(\d+d)?\s*(\d+h)?\s*(\d+m)?/);

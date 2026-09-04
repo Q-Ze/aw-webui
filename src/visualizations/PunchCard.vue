@@ -2,8 +2,9 @@
 div
   svg.vis-svg(ref="svg", width="100%", :height="height + 4")
   div.small.text-muted(v-if="days > 0")
-    | Avg active minutes per hour · {{ days }} days ({{ weekdayLabels[startOfWeek] }}-start weeks)
-  div.small.text-muted(v-else) No activity history for this period yet.
+    | Avg active minutes per hour · {{ days }} days, by weekday ({{ weekdayLabels[startOfWeek] }}-start)
+  div.small.text-muted(v-else-if="loaded") No activity data for the past 60 days.
+  div.small.text-muted(v-else) Loading…
 </template>
 
 <style scoped lang="scss">
@@ -25,86 +26,60 @@ svg.vis-svg {
 import * as d3 from 'd3';
 import _ from 'lodash';
 
-import { IEvent } from '~/util/interfaces';
 import { seconds_to_duration } from '~/util/time';
-import { clipEventToHours } from '~/util/hourclip';
+import { getDailyHourlyActivity } from '~/util/hourlyMatrix';
 
 const height = 168;
+const WINDOW_DAYS = 60;
 
-// Sequential blue ramp; ranks over active cells so daily peaks stand out
-// against the mostly-quiet grid (same trick as the year heatmap).
 const CELL_COLORS = ['#EEF3FB', '#D4E3F8', '#A9CBF1', '#75A8E6', '#4585DB', '#2B62B8', '#1D4890'];
 
+// Same data source as the Timeline barchart (canonical window ∩ not-afk),
+// averaged per weekday over the trailing window. Independent of the
+// selected date.
 export default {
   name: 'aw-punchcard',
   props: {
-    history: { type: Object, default: null }, // Record<period_str, IEvent[]>
     startOfWeek: { type: Number, default: 1 }, // 1 = Monday
   },
   data() {
-    return { days: 0, weekdayLabels: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] };
+    return {
+      days: 0,
+      loaded: false,
+      weekdayLabels: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+    };
   },
-  computed: {
-    // 7 (weekdays, week-start aligned) x 24 (hours) average active minutes.
-    grid(): { cells: number[][]; max: number; days: number } | null {
-      if (!this.history) return null;
-      // Cap to the trailing 60 days: history accumulates windows around
-      // every browsed date, which would otherwise skew the per-weekday
-      // averages as you navigate around.
-      const now = new Date();
-      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-      const cutoff = todayStart - 59 * 86400000;
-      const inWindow: Record<string, IEvent[]> = {};
-      _.each(this.history as Record<string, IEvent[]>, (events, key) => {
-        const startMs = new Date(key.split('/')[0]).getTime();
-        if (startMs >= cutoff && startMs <= todayStart + 86400000) {
-          inWindow[key] = events;
-        }
-      });
+  async mounted() {
+    try {
+      const { days, matrix } = await getDailyHourlyActivity(WINDOW_DAYS);
+      this.days = days.length;
+      if (days.length > 0) {
+        this.$nextTick(() => this.render(days, matrix));
+      }
+    } catch (e) {
+      console.error('aw-punchcard failed:', e);
+    }
+    this.loaded = true;
+  },
+  methods: {
+    render(dayKeys: string[], matrix: number[][]) {
+      const svgEl = this.$refs.svg as SVGSVGElement;
+      if (!svgEl) return;
+      svgEl.innerHTML = '';
+
+      // minutes[weekday][hour], and per-weekday day counts for averaging.
       const minutes: number[][] = _.range(7).map(() => new Array(24).fill(0));
-      // Per-weekday day counts: a Monday 10:00 cell must be averaged over
-      // the number of Mondays in the history, not over all days (else every
-      // cell shrinks ~7x and drowns under the noise threshold).
       const dowDays = new Array(7).fill(0);
-      const seenDates = new Set<string>();
-      _.each(inWindow, events => {
-        _.each(events || [], e => {
-          clipEventToHours(e.timestamp, e.duration || 0, slice => {
-            const key = slice.date.toDateString();
-            if (!seenDates.has(key)) {
-              seenDates.add(key);
-              dowDays[(slice.date.getDay() - this.startOfWeek + 7) % 7] += 1;
-            }
-            const dow = (slice.date.getDay() - this.startOfWeek + 7) % 7;
-            minutes[dow][slice.hour] += slice.seconds / 60;
-          });
-        });
+      dayKeys.forEach((key, i) => {
+        const d = new Date(key + 'T12:00:00');
+        const dow = (d.getDay() - this.startOfWeek + 7) % 7;
+        dowDays[dow] += 1;
+        matrix[i].forEach((m, h) => (minutes[dow][h] += m));
       });
-      const nDays = seenDates.size;
-      if (nDays === 0) return null;
       const cells = minutes.map((row, dow) => {
         const n = dowDays[dow] || 1;
         return row.map(v => (v / n >= 10 ? v / n : 0));
       });
-      return { cells, max: d3.max(cells.flat()) as number, days: nDays };
-    },
-  },
-  watch: {
-    history() {
-      this.render();
-    },
-  },
-  mounted() {
-    this.render();
-  },
-  methods: {
-    render() {
-      const svgEl = this.$refs.svg as SVGSVGElement;
-      if (!svgEl) return;
-      svgEl.innerHTML = '';
-      const grid = this.grid;
-      this.days = grid ? grid.days : 0;
-      if (!grid) return;
 
       const svg = d3.select(svgEl);
       const width = Math.max((svgEl.parentElement as HTMLElement).clientWidth - 4, 260);
@@ -116,8 +91,7 @@ export default {
       const cw = iw / 24;
       const ch = ih / 7;
 
-      // Quantile thresholds among nonzero cells for an even color spread.
-      const active = grid.cells
+      const active = cells
         .flat()
         .filter(v => v > 0)
         .sort(d3.ascending);
@@ -132,7 +106,6 @@ export default {
 
       const weekdayOrder = _.range(7).map(i => (i + this.startOfWeek) % 7);
       weekdayOrder.forEach((dayIdx, row) => {
-        // Row label
         svg
           .append('text')
           .attr('x', margin.left - 6)
@@ -143,7 +116,7 @@ export default {
           .text(this.weekdayLabels[dayIdx]);
 
         _.range(24).forEach(hour => {
-          const v = grid.cells[dayIdx][hour];
+          const v = cells[dayIdx][hour];
           const rect = g
             .append('rect')
             .attr('class', 'punch-cell')
@@ -162,7 +135,6 @@ export default {
         });
       });
 
-      // Hour axis: label every 3rd hour, thin gridline ticks.
       [0, 3, 6, 9, 12, 15, 18, 21, 23].forEach(h => {
         svg
           .append('text')

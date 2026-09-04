@@ -81,13 +81,13 @@ div.vis-card(:class="{'vis-card--editable': editable}", v-if="editable || !activ
     div(v-if="type == 'category_donut'")
       aw-category-donut(:events="activityStore.category.top")
     div(v-if="type == 'hourly_rhythm'")
-      aw-hourly-rhythm(:history="activityStore.active.history")
+      aw-hourly-rhythm
     div(v-if="type == 'calendar_heatmap'")
       aw-calendar-heatmap
     div(v-if="type == 'category_weekly'")
       aw-category-weekly
     div(v-if="type == 'punchcard'")
-      aw-punchcard(:history="activityStore.active.history")
+      aw-punchcard
     div(v-if="type == 'focus_sessions'")
       aw-focus-sessions
     div(v-if="type == 'switch_rate'")
