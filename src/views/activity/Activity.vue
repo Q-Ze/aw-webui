@@ -393,7 +393,10 @@ export default {
           length: [1, this.periodLength],
         };
       } else {
-        const len = { last7d: [7, 'days'], last30d: [30, 'days'] }[this.periodLength];
+        // Unknown periodLength (e.g. a stale pre-multidevice URL where a
+        // date ended up parsed as the periodLength) must not crash the
+        // whole page: fall back to a single day instead.
+        const len = { last7d: [7, 'days'], last30d: [30, 'days'] }[this.periodLength] || [1, 'day'];
         return {
           start: get_day_start_with_offset(
             moment(this._date).subtract(len[0] - 1, len[1]),
@@ -421,7 +424,7 @@ export default {
         } else if (this.periodLength === 'last30d') {
           periodLength = [30, 'day'];
         } else {
-          throw 'unknown periodLength';
+          periodLength = [1, 'day'];
         }
       }
 

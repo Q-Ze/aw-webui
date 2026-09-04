@@ -10,6 +10,17 @@
 </template>
 
 <style lang="scss">
+// Per-host colored dot prepended to lane labels (multidevice cue).
+span.aw-lane-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: baseline;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+
 div#visualization {
   margin-top: 0.5em;
   margin-bottom: 0.5em;
@@ -56,7 +67,7 @@ import _ from 'lodash';
 import moment from 'moment';
 import Color from 'color';
 import { buildTooltip } from '../util/tooltip.js';
-import { getCategoryColorFromEvent, getTitleAttr } from '../util/color';
+import { getCategoryColorFromEvent, getColorFromString, getTitleAttr } from '../util/color';
 import { getSwimlane } from '../util/swimlane.js';
 import { IEvent } from '../util/interfaces';
 import { formatTimelineBucketLabelHtml, shortenBucketLabel } from '../util/timelineLabels';
@@ -365,6 +376,15 @@ export default {
           label = formatTimelineBucketLabelHtml(bucket.id, {
             hostname: hasCollision && host ? host : undefined,
           });
+          // Multidevice cue: a stable colored dot per host in the lane label,
+          // so lanes from different machines are distinguishable at a glance
+          // even when their events are colored by app/category.
+          if (host) {
+            const dotColor = getColorFromString(host);
+            label =
+              `<span class="aw-lane-dot" style="background:${dotColor};" title="${host}"></span>` +
+              label;
+          }
         }
         return { id: bucket.id, content: label };
       });

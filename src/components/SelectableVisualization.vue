@@ -1,5 +1,5 @@
 <template lang="pug">
-div(v-if="editable || !activityStore.buckets.loaded || has_prerequisites || !settingsStore.hideUnsupportedVisualizations")
+div.vis-card(:class="{'vis-card--editable': editable}", v-if="editable || !activityStore.buckets.loaded || has_prerequisites || !settingsStore.hideUnsupportedVisualizations")
   h5
     icon.handle(name="bars" v-if="editable" style="opacity: 0.6; cursor: grab;")
     | {{ visualizations[type].title }}
@@ -78,6 +78,14 @@ div(v-if="editable || !activityStore.buckets.loaded || has_prerequisites || !set
                  with_limit)
     div(v-if="type == 'category_tree'")
       aw-categorytree(:events="activityStore.category.top")
+    div(v-if="type == 'category_donut'")
+      aw-category-donut(:events="activityStore.category.top")
+    div(v-if="type == 'hourly_rhythm'")
+      aw-hourly-rhythm(:history="activityStore.active.history")
+    div(v-if="type == 'calendar_heatmap'")
+      aw-calendar-heatmap
+    div(v-if="type == 'category_weekly'")
+      aw-category-weekly
     div(v-if="type == 'category_sunburst'")
       aw-sunburst-categories(:data="top_categories_hierarchy", style="height: 20em")
     div(v-if="type == 'timeline_barchart'")
@@ -166,6 +174,10 @@ export default {
         'top_categories',
         'category_tree',
         'category_sunburst',
+        'category_donut',
+        'hourly_rhythm',
+        'calendar_heatmap',
+        'category_weekly',
         'top_editor_files',
         'top_editor_languages',
         'top_editor_projects',
@@ -247,6 +259,22 @@ export default {
         },
         category_sunburst: {
           title: 'Category Sunburst',
+          available: this.activityStore.category.available,
+        },
+        category_donut: {
+          title: 'Category Donut',
+          available: this.activityStore.category.available,
+        },
+        hourly_rhythm: {
+          title: 'Hourly Activity Rhythm',
+          available: this.activityStore.active.available,
+        },
+        calendar_heatmap: {
+          title: 'Year Activity Heatmap',
+          available: this.activityStore.active.available,
+        },
+        category_weekly: {
+          title: 'Weekly by Category',
           available: this.activityStore.category.available,
         },
         timeline_barchart: {

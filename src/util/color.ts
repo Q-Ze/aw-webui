@@ -10,7 +10,25 @@ import { IEvent, IBucket } from './interfaces';
 
 const COLOR_UNCAT = '#CCC';
 
-const scale = d3.scaleOrdinal(['#90CAF9', '#FFE082', '#EF9A9A', '#A5D6A7']);
+// A 12-color harmonious palette (Material 200-level tones, so foreground text
+// stays readable on top of bars filled with these colors). Adjacent hues are
+// deliberately distinct so app/category colors don't blur together in lists.
+const palette = [
+  '#90CAF9', // blue
+  '#FFE082', // yellow
+  '#EF9A9A', // red
+  '#A5D6A7', // green
+  '#CE93D8', // purple
+  '#80DEEA', // cyan
+  '#FFAB91', // deep orange
+  '#C5E1A5', // light green
+  '#F48FB1', // pink
+  '#B39DDB', // deep purple
+  '#FFE0B2', // orange
+  '#B0BEC5', // blue grey
+];
+
+const scale = d3.scaleOrdinal(palette);
 
 // Needed to prewarm the color table
 scale.domain(

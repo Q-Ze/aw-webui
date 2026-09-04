@@ -474,3 +474,29 @@ label.btn-outline-danger {
   color: #0f131a !important;
   border-color: #e9ebf0 !important;
 }
+
+/* --- Visualization theme tokens (match :root in style.scss) --- */
+:root {
+  --aw-vis-text: #E2E6EE;
+  --aw-vis-subtext: #9AA3B2;
+  --aw-vis-track: #262B35;
+  --aw-vis-grid: #2A303B;
+  --aw-vis-tooltip-bg: #1E222B;
+  --aw-vis-tooltip-text: #E2E6EE;
+}
+
+/* --- Visualization cards --- */
+.vis-card {
+  background-color: #1A1D24 !important;
+  border-color: #282C32 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 6px rgba(0, 0, 0, 0.25) !important;
+}
+
+.vis-card:not(.vis-card--editable):hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45) !important;
+}
+
+/* Timeline (vis.js) lane backgrounds stay dark. */
+div.vis-timeline {
+  background-color: #14171D !important;
+}
