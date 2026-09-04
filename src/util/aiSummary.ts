@@ -47,6 +47,8 @@ export interface LLMConfig {
   provider: LLMProvider;
   apiKey: string;
   model: string;
+  /** Override the provider's default API endpoint (e.g. an OpenAI-compatible proxy). */
+  baseUrl?: string;
 }
 
 const LS_KEY = 'aw-ai-summary-llm-config';
@@ -65,9 +67,13 @@ export function loadLLMConfig(): Partial<LLMConfig> {
   }
 }
 
-export function saveLLMConfig(config: Partial<LLMConfig>): void {
+export function saveLLMConfig(config: Partial<LLMConfig>, rememberKey = false): void {
   const persistedConfig = { ...config };
-  delete persistedConfig.apiKey;
+  // The API key is only persisted when the user explicitly opts in (it is
+  // required for the weekly auto-digest to run without re-entering it).
+  if (!rememberKey) {
+    delete persistedConfig.apiKey;
+  }
   localStorage.setItem(LS_KEY, JSON.stringify(persistedConfig));
 }
 
@@ -75,7 +81,9 @@ export async function callLLM(config: LLMConfig, userMessage: string): Promise<s
   if (!config.apiKey) throw new Error('API key is required');
 
   if (config.provider === 'openai') {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    const endpoint =
+      (config.baseUrl || 'https://api.openai.com').replace(/\/$/, '') + '/v1/chat/completions';
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -96,7 +104,9 @@ export async function callLLM(config: LLMConfig, userMessage: string): Promise<s
   }
 
   if (config.provider === 'anthropic') {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const endpoint =
+      (config.baseUrl || 'https://api.anthropic.com').replace(/\/$/, '') + '/v1/messages';
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

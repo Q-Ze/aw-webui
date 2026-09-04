@@ -1,22 +1,28 @@
 <template lang="pug">
 div
-  h3 Timespiral
-  b-alert(show, variant="warning")
-    | This is a work-in-progress experiment.
+  h3.mb-2 Time Spiral
+  div.d-flex.align-items-center.mb-3.flex-wrap
+    span.small.text-muted.mr-3 每圈一天（24 小时，0 点在正上方），中心是最近的一天，向外回溯过去
+    b-button-group(size="sm", style="width: auto;")
+      b-button(
+        v-for="d in [7, 14, 30]",
+        :key="d",
+        :pressed="days === d",
+        variant="outline-secondary",
+        @click="days = d"
+      ) {{ d }} 天
+    span.small.text-muted.ml-3(v-if="loading") 加载中…
+    span.small.text-muted.ml-3(v-else-if="events.length === 0 && loaded") 该时间段没有窗口事件（需要 window/afk watcher）。
 
-  div(v-if="!bucketId")
-    p.text-muted
-      | No AFK bucket found on this host. Install
-      | #[a(href="https://docs.activitywatch.net/en/latest/watchers.html") aw-watcher-afk]
-      | to use the Timespiral.
-  div(v-else)
-    p.small.text-muted Bucket: #[code {{ bucketId }}] &middot; Events: {{ events.length }}
-    Timespiral(:events="events")
+  Timespiral(:events="events", :days="days")
 </template>
 
 <script lang="ts">
-import { useBucketsStore } from '~/stores/buckets';
-import Timespiral from '~/visualizations/Timespiral.vue';
+import moment from 'moment';
+
+import Timespiral from '~/visualizations/TimespiralRewrite.vue';
+import { fetchCategorizedWindowEvents } from '~/util/windowAnalysis';
+import { IEvent } from '~/util/interfaces';
 
 export default {
   name: 'TimespiralView',
@@ -25,36 +31,36 @@ export default {
   },
   data() {
     return {
-      events: [],
-      bucketId: '',
+      days: 14,
+      events: [] as IEvent[],
+      loading: false,
+      loaded: false,
     };
   },
+  watch: {
+    days() {
+      this.load();
+    },
+  },
   async mounted() {
-    const bucketStore = useBucketsStore();
-    await bucketStore.ensureLoaded();
-    const buckets = bucketStore.bucketsAFK(bucketStore.hosts[0]);
-    if (buckets.length == 0) {
-      console.warn("Couldn't find suitable bucket");
-      return;
-    }
-    this.bucketId = buckets[0];
-
-    // Show the last week by default. Previously hard-coded to 2022-08-08
-    // which left most users staring at an empty chart.
-    const start = new Date();
-    start.setDate(start.getDate() - 7);
-    const bucket = await bucketStore.getBucketWithEvents({
-      id: this.bucketId,
-      start,
-    });
-    this.events = bucket.events;
-    console.log('Retrieved events:', this.events);
-    console.log('First/last event:', this.events[0], this.events[this.events.length - 1]);
+    await this.load();
   },
   methods: {
-    onEventClick(event) {
-      this.$store.commit('setSelectedEvent', event);
-      this.$router.push({ name: 'EventView' });
+    async load() {
+      this.loading = true;
+      try {
+        this.events = await fetchCategorizedWindowEvents(
+          moment()
+            .startOf('day')
+            .subtract(this.days - 1, 'days'),
+          moment()
+        );
+      } catch (e) {
+        console.error('timespiral failed:', e);
+        this.events = [];
+      }
+      this.loading = false;
+      this.loaded = true;
     },
   },
 };

@@ -69,6 +69,11 @@ Vue.component('aw-category-donut', () => import('./visualizations/CategoryDonut.
 Vue.component('aw-hourly-rhythm', () => import('./visualizations/HourlyRhythm.vue'));
 Vue.component('aw-calendar-heatmap', () => import('./visualizations/CalendarHeatmap.vue'));
 Vue.component('aw-category-weekly', () => import('./visualizations/CategoryWeekly.vue'));
+Vue.component('aw-punchcard', () => import('./visualizations/PunchCard.vue'));
+Vue.component('aw-focus-sessions', () => import('./visualizations/FocusSessions.vue'));
+Vue.component('aw-switch-rate', () => import('./visualizations/SwitchRate.vue'));
+Vue.component('aw-digest-card', () => import('./visualizations/DigestCard.vue'));
+Vue.component('aw-digest-weekly', () => import('./components/DigestWeeklyNotification.vue'));
 
 // A mixin to make async method errors propagate
 import asyncErrorCapturedMixin from './mixins/asyncErrorCaptured.js';

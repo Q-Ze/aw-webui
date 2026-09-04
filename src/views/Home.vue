@@ -8,6 +8,8 @@ div
     b-button.ml-2(size="sm" variant="primary" :href="supporterNudgeHref" target="_blank" @click="onSupporterNudgeSupport") {{ $t('home.supporterNudge.support') }}
     b-button.ml-1(size="sm" variant="link" @click="snoozeSupporterNudge") {{ $t('home.supporterNudge.notNow') }}
 
+  aw-digest-weekly.mb-3
+
   h3 {{ $t('home.greeting') }}
   p
     | {{ homeIntro1 }}

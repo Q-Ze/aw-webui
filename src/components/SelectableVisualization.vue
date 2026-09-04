@@ -86,6 +86,14 @@ div.vis-card(:class="{'vis-card--editable': editable}", v-if="editable || !activ
       aw-calendar-heatmap
     div(v-if="type == 'category_weekly'")
       aw-category-weekly
+    div(v-if="type == 'punchcard'")
+      aw-punchcard(:history="activityStore.active.history")
+    div(v-if="type == 'focus_sessions'")
+      aw-focus-sessions
+    div(v-if="type == 'switch_rate'")
+      aw-switch-rate
+    div(v-if="type == 'ai_digest'")
+      aw-digest-card
     div(v-if="type == 'category_sunburst'")
       aw-sunburst-categories(:data="top_categories_hierarchy", style="height: 20em")
     div(v-if="type == 'timeline_barchart'")
@@ -178,6 +186,10 @@ export default {
         'hourly_rhythm',
         'calendar_heatmap',
         'category_weekly',
+        'punchcard',
+        'focus_sessions',
+        'switch_rate',
+        'ai_digest',
         'top_editor_files',
         'top_editor_languages',
         'top_editor_projects',
@@ -276,6 +288,22 @@ export default {
         category_weekly: {
           title: 'Weekly by Category',
           available: this.activityStore.category.available,
+        },
+        punchcard: {
+          title: 'Activity by Weekday × Hour',
+          available: this.activityStore.active.available,
+        },
+        focus_sessions: {
+          title: 'Focus Sessions',
+          available: this.activityStore.window.available,
+        },
+        switch_rate: {
+          title: 'Context Switching',
+          available: this.activityStore.window.available,
+        },
+        ai_digest: {
+          title: 'AI Time Digest',
+          available: true,
         },
         timeline_barchart: {
           title: 'Timeline (barchart)',

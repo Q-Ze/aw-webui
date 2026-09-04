@@ -77,7 +77,7 @@ div(:class="{'fixed-top-padding': fixedTopMenu}")
           b-dropdown-item(to="/alerts" v-if="devmode")
             icon(name="flag-checkered")
             | {{ $t('nav.alerts') }}
-          b-dropdown-item(to="/timespiral" v-if="devmode")
+          b-dropdown-item(to="/timespiral")
             icon(name="history")
             | {{ $t('nav.timespiral') }}
           b-dropdown-item(to="/query")
