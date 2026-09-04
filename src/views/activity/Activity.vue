@@ -70,6 +70,7 @@ div
       input.form-control.form-control-sm.activity-dateinput(
         type="date"
         :value="_date"
+        :min="minQueryableDate"
         :max="today"
         :title="periodIsBrowseable ? periodReadableRange : ''"
         @change="setDate($event.target.value, periodLength)"
@@ -281,6 +282,13 @@ export default {
     ...mapState(useSettingsStore, ['devmode']),
     ...mapState(useSettingsStore, ['always_active_pattern']),
 
+    // Earliest date the date input allows. aw-server stores timestamps as
+    // i64 nanoseconds and cannot represent (and crashes on) dates outside
+    // 1677-09-21 .. 2262-04-11; see MIN/MAX_QUERYABLE_DATE in setDate.
+    minQueryableDate() {
+      return '1678-01-01';
+    },
+
     // number of filters currently set (different from defaults)
     filters_set() {
       return (this.filter_category ? 1 : 0) + (!this.filter_afk ? 1 : 0);
@@ -484,6 +492,20 @@ export default {
 
       const momentJsDate = moment(date);
       if (!momentJsDate.isValid()) {
+        return;
+      }
+
+      // Reject dates outside the range aw-server can query: it stores
+      // timestamps as i64 nanoseconds (representable range 1677-09-21 ..
+      // 2262-04-11) and an out-of-range query period currently crashes its
+      // datastore worker (Option::unwrap on a None timestamp_nanos_opt()).
+      // The whole-year bounds also keep year-period views inside the range.
+      const MIN_QUERYABLE_DATE = moment('1678-01-01');
+      const MAX_QUERYABLE_DATE = moment('2261-12-31');
+      if (momentJsDate.isBefore(MIN_QUERYABLE_DATE) || momentJsDate.isAfter(MAX_QUERYABLE_DATE)) {
+        console.warn(
+          `Ignoring out-of-range date "${date}": must be within 1678-01-01 and 2261-12-31`
+        );
         return;
       }
 
