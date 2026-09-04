@@ -25,7 +25,27 @@ export interface FocusSession {
  * the hosts visible to the current multidevice setting, restricted to
  * [start, end).
  */
-export async function fetchCategorizedWindowEvents(
+// Short-TTL cache: focus-sessions and switch-rate (and the timespiral on
+// short ranges) ask for the same day repeatedly — one query serves them all.
+const fetchCache = new Map<string, { at: number; promise: Promise<IEvent[]> }>();
+const FETCH_TTL_MS = 15000;
+
+export function fetchCategorizedWindowEvents(
+  start: moment.Moment,
+  end: moment.Moment
+): Promise<IEvent[]> {
+  const key = `${start.valueOf()}|${end.valueOf()}`;
+  const hit = fetchCache.get(key);
+  if (hit && Date.now() - hit.at < FETCH_TTL_MS) {
+    return hit.promise;
+  }
+  const promise = fetchCategorizedWindowEventsUncached(start, end);
+  fetchCache.set(key, { at: Date.now(), promise });
+  promise.catch(() => fetchCache.delete(key));
+  return promise;
+}
+
+async function fetchCategorizedWindowEventsUncached(
   start: moment.Moment,
   end: moment.Moment
 ): Promise<IEvent[]> {

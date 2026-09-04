@@ -1,12 +1,11 @@
 // Shared "activity by hour" matrix for the rhythm and punchcard charts.
 //
-// Both charts previously derived their data from the AFK store's
-// active.history (not-afk events merged server-side into one segment per
-// day, which stretches across watcher outages). They now use the same
-// source as the Timeline barchart — canonical window events intersected
-// with not-afk time — queried once for the trailing N days and cut into
-// clock hours client-side. A module-level cache lets both cards share a
-// single query.
+// Source: canonical window events (window ∩ not-afk), same as the Timeline
+// barchart. All requests share ONE server query anchored at today (the
+// 60-day canonical query costs ~2s of the server's single-threaded
+// datastore time, so it must not run per browsed date); older end dates
+// are sliced out of the anchored result locally. The tiny (60×24 numbers)
+// matrix is persisted to localStorage so page reloads skip the query too.
 
 import { getClient } from '~/util/awclient';
 import { useBucketsStore } from '~/stores/buckets';
@@ -24,29 +23,75 @@ export interface DailyHourlyMatrix {
 }
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
-const cache = new Map<string, { at: number; promise: Promise<DailyHourlyMatrix> }>();
+const LS_KEY = 'aw-hourly-matrix';
+const ANCHOR_DAYS = 60;
 
-/**
- * Activity matrix for the nDays ending at endDate (default: today), so the
- * charts can follow the date the user is browsing. Results are cached per
- * (nDays, endDate) for a short TTL — flipping between dates is instant.
- */
-export function getDailyHourlyActivity(nDays: number, endDate?: Date): Promise<DailyHourlyMatrix> {
-  const end = endDate || new Date();
-  const endKey = keyOf(new Date(end.getFullYear(), end.getMonth(), end.getDate()));
-  const cacheKey = `${nDays}|${endKey}`;
-  const hit = cache.get(cacheKey);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
-    return hit.promise;
+interface AnchorPayload {
+  at: number;
+  days: string[];
+  matrix: number[][];
+}
+
+let anchorPromise: Promise<AnchorPayload> | null = null;
+
+function startOfTodayLocal(): Date {
+  const n = new Date();
+  return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+}
+
+function readPersisted(): AnchorPayload | null {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.days) || Date.now() - parsed.at > CACHE_TTL_MS) {
+      return null;
+    }
+    return parsed as AnchorPayload;
+  } catch {
+    return null;
   }
-  const promise = fetchDailyHourlyActivity(
-    nDays,
-    new Date(end.getFullYear(), end.getMonth(), end.getDate())
-  );
-  cache.set(cacheKey, { at: Date.now(), promise });
-  // Do not cache failures.
-  promise.catch(() => cache.delete(cacheKey));
-  return promise;
+}
+
+function loadAnchor(): Promise<AnchorPayload> {
+  const persisted = readPersisted();
+  if (persisted) {
+    return Promise.resolve(persisted);
+  }
+  if (!anchorPromise) {
+    anchorPromise = fetchDailyHourlyActivity(ANCHOR_DAYS, startOfTodayLocal())
+      .then(res => {
+        const payload: AnchorPayload = { at: Date.now(), ...res };
+        try {
+          localStorage.setItem(LS_KEY, JSON.stringify(payload));
+        } catch {
+          /* storage full/disabled — in-memory only */
+        }
+        return payload;
+      })
+      .catch(err => {
+        anchorPromise = null;
+        throw err;
+      });
+  }
+  return anchorPromise;
+}
+
+/** Activity matrix for the nDays ending at endDate (default: today). */
+export async function getDailyHourlyActivity(
+  nDays: number,
+  endDate?: Date
+): Promise<DailyHourlyMatrix> {
+  const anchor = await loadAnchor();
+  const end = endDate || startOfTodayLocal();
+  const endKey = keyOf(new Date(end.getFullYear(), end.getMonth(), end.getDate()));
+  const endIdx = anchor.days.indexOf(endKey);
+  const lastIdx = endIdx >= 0 ? endIdx : anchor.days.length - 1;
+  const firstIdx = Math.max(lastIdx - nDays + 1, 0);
+  return {
+    days: anchor.days.slice(firstIdx, lastIdx + 1),
+    matrix: anchor.matrix.slice(firstIdx, lastIdx + 1),
+  };
 }
 
 async function fetchDailyHourlyActivity(nDays: number, endDate: Date): Promise<DailyHourlyMatrix> {
@@ -64,8 +109,6 @@ async function fetchDailyHourlyActivity(nDays: number, endDate: Date): Promise<D
   );
   if (hosts_with_buckets.length === 0) return { days: [], matrix: [] };
 
-  // One query, one day-period per trailing day: events = window ∩ not-afk
-  // (canonical, without the category merge — we only need durations).
   const q: string[] = [];
   hosts_with_buckets.forEach(host => {
     const p = host_params[host];

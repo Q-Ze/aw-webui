@@ -55,16 +55,15 @@ export default {
   methods: {
     async load() {
       try {
-        // Shared 60-day fetch (the punchcard uses the full window); take the
-        // trailing 30 days locally so both cards hit one query via the cache.
+        // The util anchors a single 60-day server query and slices windows
+        // locally — switching dates costs no extra queries.
         const end = this.selectedDate();
         this.endLabel = `${String(end.getMonth() + 1).padStart(2, '0')}/${String(
           end.getDate()
         ).padStart(2, '0')}`;
-        const { days, matrix } = await getDailyHourlyActivity(60, end);
-        const keep = Math.min(WINDOW_DAYS, days.length);
-        const d = days.slice(-keep);
-        const m = matrix.slice(-keep);
+        const { days, matrix } = await getDailyHourlyActivity(WINDOW_DAYS, end);
+        const d = days;
+        const m = matrix;
         this.days = d.length;
         if (d.length > 0) {
           const totals = new Array(24).fill(0);
