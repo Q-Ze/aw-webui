@@ -48,13 +48,26 @@ export default {
     // 7 (weekdays, week-start aligned) x 24 (hours) average active minutes.
     grid(): { cells: number[][]; max: number; days: number } | null {
       if (!this.history) return null;
+      // Cap to the trailing 60 days: history accumulates windows around
+      // every browsed date, which would otherwise skew the per-weekday
+      // averages as you navigate around.
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const cutoff = todayStart - 59 * 86400000;
+      const inWindow: Record<string, IEvent[]> = {};
+      _.each(this.history as Record<string, IEvent[]>, (events, key) => {
+        const startMs = new Date(key.split('/')[0]).getTime();
+        if (startMs >= cutoff && startMs <= todayStart + 86400000) {
+          inWindow[key] = events;
+        }
+      });
       const minutes: number[][] = _.range(7).map(() => new Array(24).fill(0));
       // Per-weekday day counts: a Monday 10:00 cell must be averaged over
       // the number of Mondays in the history, not over all days (else every
       // cell shrinks ~7x and drowns under the noise threshold).
       const dowDays = new Array(7).fill(0);
       const seenDates = new Set<string>();
-      _.each(this.history as Record<string, IEvent[]>, events => {
+      _.each(inWindow, events => {
         _.each(events || [], e => {
           clipEventToHours(e.timestamp, e.duration || 0, slice => {
             const key = slice.date.toDateString();

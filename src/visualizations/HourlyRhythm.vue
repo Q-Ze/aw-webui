@@ -41,9 +41,17 @@ export default {
   computed: {
     hourlyStats(): { avg: number[]; days: number } | null {
       if (!this.history) return null;
+      // active.history accumulates a ±15d window around every date the user
+      // browses; without a cap the day count (and the "past N days" label)
+      // keeps growing as you navigate. Restrict to the trailing 30 days.
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const cutoff = todayStart - 29 * 86400000;
       const hours = new Array(24).fill(0);
       let nDays = 0;
-      _.each(this.history as Record<string, IEvent[]>, events => {
+      _.each(this.history as Record<string, IEvent[]>, (events, key) => {
+        const startMs = new Date(key.split('/')[0]).getTime();
+        if (!(startMs >= cutoff && startMs <= todayStart + 86400000)) return;
         if (!events || events.length === 0) return;
         nDays += 1;
         _.each(events, e => addEventToHours(e, hours));

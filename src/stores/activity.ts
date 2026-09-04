@@ -493,9 +493,7 @@ export const useActivityStore = defineStore('activity', {
       const bucketsStore = useBucketsStore();
       // Filter out periods that are already in the history, and that are in the future
       const periods = timeperiodStrsAroundTimeperiod(timeperiod).filter(tp_str => {
-        return (
-          !_.includes(this.active.history, tp_str) && new Date(tp_str.split('/')[0]) < new Date()
-        );
+        return !(tp_str in this.active.history) && new Date(tp_str.split('/')[0]) < new Date();
       });
       let afk_buckets: string[] = [];
       if (settingsStore.useMultidevice) {
@@ -640,7 +638,7 @@ export const useActivityStore = defineStore('activity', {
 
     async query_active_history_android({ timeperiod }: QueryOptions) {
       const periods = timeperiodStrsAroundTimeperiod(timeperiod).filter(tp_str => {
-        return !_.includes(this.active.history, tp_str);
+        return !(tp_str in this.active.history);
       });
       // Prefer ScreenTime bucket over Android watcher for consistency with query_android
       const iosOrAndroidBucket =
