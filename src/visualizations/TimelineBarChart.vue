@@ -10,9 +10,19 @@ div.small(v-else, style="font-size: 16pt; color: #aaa;")
 
 <script lang="ts">
 import _ from 'lodash';
-import { ChartOptions } from 'chart.js';
-import 'chart.js/auto';
+import {
+  Chart,
+  BarController,
+  BarElement,
+  CategoryScale,
+  LinearScale,
+  Legend,
+  Tooltip,
+  ChartOptions,
+} from 'chart.js';
 import { Bar } from 'vue-chartjs/legacy';
+
+Chart.register(BarController, BarElement, CategoryScale, LinearScale, Legend, Tooltip);
 import {
   format_day_of_month,
   format_weekday_short,
@@ -44,7 +54,7 @@ export default {
         {
           label: 'Total time',
           backgroundColor: '#6699ff',
-          data: Array.from({ length: 40 }, () => Math.floor(Math.random() * 40)),
+          data: Array.from({ length: 40 }, (_, index) => (index % 8) + 1),
         },
       ],
     },
@@ -92,7 +102,9 @@ export default {
     chartData() {
       return {
         labels: this.labels,
-        datasets: _.sortBy(this.datasets, d => d.label),
+        datasets: this.datasets
+          .slice()
+          .sort((a, b) => String(a.label || '').localeCompare(String(b.label || ''))),
         title: {
           display: true,
           text: 'Timeline',

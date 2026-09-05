@@ -2,8 +2,8 @@
 div
   svg.vis-svg(ref="svg", width="100%", :height="height + 4")
   div.small.text-muted(v-if="days > 0")
-    | Avg active minutes per hour · {{ days }} days ending {{ endLabel }}, by weekday ({{ weekdayLabels[startOfWeek] }}-start)
-  div.small.text-muted(v-else-if="loaded") No activity data for the past 60 days.
+    | {{ caption }}
+  div.small.text-muted(v-else-if="loaded") No activity data for this range.
   div.small.text-muted(v-else) Loading…
 </template>
 
@@ -13,48 +13,69 @@ svg.vis-svg {
 }
 
 :deep(.punch-cell) {
-  transition: opacity 0.1s ease;
   cursor: pointer;
 
   &:hover {
-    opacity: 0.75;
+    stroke: var(--aw-vis-subtext, #6b7280);
+    stroke-width: 1.2;
   }
+}
+
+:deep(.punch-cell--future) {
+  opacity: 0.35;
 }
 </style>
 
 <script lang="ts">
 import * as d3 from 'd3';
 import _ from 'lodash';
+import moment from 'moment';
 
 import { seconds_to_duration } from '~/util/time';
-import { getDailyHourlyActivity } from '~/util/hourlyMatrix';
-import { useActivityStore } from '~/stores/activity';
+import {
+  getDailyHourlyActivityByDays,
+  getDailyHourlyActivityForTimeperiod,
+} from '~/util/hourlyMatrix';
+import { TimePeriod } from '~/util/timeperiod';
 
-const height = 168;
-const WINDOW_DAYS = 60;
+const height = 176;
 
-const CELL_COLORS = ['#EEF3FB', '#D4E3F8', '#A9CBF1', '#75A8E6', '#4585DB', '#2B62B8', '#1D4890'];
+interface Row {
+  label: string;
+  hours: number[];
+  future: boolean;
+}
 
-// Same data source as the Timeline barchart (canonical window ∩ not-afk),
-// averaged per weekday over the trailing window. Independent of the
-// selected date.
+// Day (single week) and week views show the containing week's seven real days,
+// one row each; future days are dimmed and empty. Longer ranges keep the
+// classic per-weekday average.
 export default {
   name: 'aw-punchcard',
   props: {
-    startOfWeek: { type: Number, default: 1 }, // 1 = Monday
+    timeperiodStart: { type: String, default: null },
+    timeperiodLength: { type: Array, default: () => [1, 'day'] },
+    weekStart: { type: String, default: 'Monday' },
   },
   data() {
     return {
-      activityStore: useActivityStore(),
-      days: 0,
       loaded: false,
-      endLabel: '',
+      days: 0,
+      loadToken: 0,
+      caption: '',
       weekdayLabels: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
     };
   },
+  computed: {
+    isWeekView(): boolean {
+      const unit = this.timeperiodLength[1] as string;
+      return unit.startsWith('day') || unit.startsWith('week');
+    },
+  },
   watch: {
-    // Follow the browsed date: the window is the 60 days ending at it.
-    'activityStore.query_options.timeperiod': function () {
+    timeperiodStart() {
+      this.load();
+    },
+    timeperiodLength() {
       this.load();
     },
   },
@@ -62,45 +83,77 @@ export default {
     await this.load();
   },
   methods: {
+    weekStartIndex(): number {
+      if (this.weekStart === 'Monday') return 1;
+      if (this.weekStart === 'Saturday') return 6;
+      return 0;
+    },
+    weekDayKeys(): string[] {
+      const ws = this.weekStartIndex();
+      const selected = moment(this.timeperiodStart || undefined);
+      const start = selected.clone().startOf(ws === 1 ? 'isoWeek' : 'week');
+      if (ws === 6) start.subtract(1, 'day');
+      return _.range(7).map(i => start.clone().add(i, 'days').format('YYYY-MM-DD'));
+    },
     async load() {
+      const token = ++this.loadToken;
       try {
-        const end = this.selectedDate();
-        this.endLabel = `${String(end.getMonth() + 1).padStart(2, '0')}/${String(
-          end.getDate()
-        ).padStart(2, '0')}`;
-        const { days, matrix } = await getDailyHourlyActivity(WINDOW_DAYS, end);
-        this.days = days.length;
-        if (days.length > 0) {
-          this.$nextTick(() => this.render(days, matrix));
+        let rows: Row[];
+        if (this.isWeekView) {
+          const keys = this.weekDayKeys();
+          const perDay = await getDailyHourlyActivityByDays(keys);
+          if (token !== this.loadToken) return;
+          const ws = this.weekStartIndex();
+          const todayKey = moment().format('YYYY-MM-DD');
+          rows = keys.map((key, i) => ({
+            label: this.weekdayLabels[(ws + i) % 7],
+            hours: perDay[key] || new Array(24).fill(0),
+            future: key > todayKey,
+          }));
+          const fmt = (k: string) => moment(k).format('MM/DD');
+          this.caption = `This week (${fmt(keys[0])} – ${fmt(
+            keys[6]
+          )}) · minutes per weekday × hour`;
+        } else {
+          const period: TimePeriod = {
+            start: this.timeperiodStart || new Date().toISOString(),
+            length: this.timeperiodLength,
+          };
+          const { days, matrix } = await getDailyHourlyActivityForTimeperiod(period);
+          if (token !== this.loadToken) return;
+          const ws = this.weekStartIndex();
+          const minutes: number[][] = _.range(7).map(() => new Array(24).fill(0));
+          const dowDays = new Array(7).fill(0);
+          days.forEach((key, i) => {
+            const dow = (moment(key + 'T12:00:00').day() - ws + 7) % 7;
+            dowDays[dow] += 1;
+            matrix[i].forEach((m, h) => (minutes[dow][h] += m));
+          });
+          rows = _.range(7).map(i => {
+            const dow = (ws + i) % 7;
+            const n = dowDays[dow] || 1;
+            return {
+              label: this.weekdayLabels[dow],
+              hours: minutes[dow].map(v => v / n),
+              future: false,
+            };
+          });
+          const count = days.length;
+          this.caption = `Average per weekday × hour · ${count} calendar day${
+            count === 1 ? '' : 's'
+          } · ${moment(days[count - 1]).format('MM/DD')}`;
         }
+        this.days = this.isWeekView ? 7 : rows.length;
+        if (token === this.loadToken) this.$nextTick(() => this.render(rows));
       } catch (e) {
         console.error('aw-punchcard failed:', e);
       }
-      this.loaded = true;
+      if (token === this.loadToken) this.loaded = true;
     },
-    selectedDate(): Date {
-      const qo = useActivityStore().query_options;
-      const d = qo ? new Date(qo.timeperiod.start) : new Date();
-      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    },
-    render(dayKeys: string[], matrix: number[][]) {
+    render(rows: Row[]) {
       const svgEl = this.$refs.svg as SVGSVGElement;
       if (!svgEl) return;
       svgEl.innerHTML = '';
-
-      // minutes[weekday][hour], and per-weekday day counts for averaging.
-      const minutes: number[][] = _.range(7).map(() => new Array(24).fill(0));
-      const dowDays = new Array(7).fill(0);
-      dayKeys.forEach((key, i) => {
-        const d = new Date(key + 'T12:00:00');
-        const dow = (d.getDay() - this.startOfWeek + 7) % 7;
-        dowDays[dow] += 1;
-        matrix[i].forEach((m, h) => (minutes[dow][h] += m));
-      });
-      const cells = minutes.map((row, dow) => {
-        const n = dowDays[dow] || 1;
-        return row.map(v => (v / n >= 10 ? v / n : 0));
-      });
 
       const svg = d3.select(svgEl);
       const width = Math.max((svgEl.parentElement as HTMLElement).clientWidth - 4, 260);
@@ -112,46 +165,43 @@ export default {
       const cw = iw / 24;
       const ch = ih / 7;
 
-      const active = cells
-        .flat()
-        .filter(v => v > 0)
-        .sort(d3.ascending);
-      const thresholds = [0.25, 0.5, 0.75, 0.9]
-        .map(q => d3.quantile(active, q) as number)
-        .filter((v, i, arr) => v > 0 && (i === 0 || v > arr[i - 1]));
+      // Continuous sqrt-ramp scale so short sessions (10–20 min) are clearly
+      // visible instead of collapsing into the track color.
+      const maxVal = Math.max(90, ...rows.map(r => Math.max(...r.hours)));
       const color = d3
-        .scaleThreshold<number, string>()
-        .domain(thresholds)
-        .range(CELL_COLORS.slice(0, thresholds.length + 1));
+        .scaleSequential(t =>
+          d3.interpolateRgbBasis(['#E8F0FE', '#A9CBF1', '#5B8DEF', '#2B62B8', '#16386E'])(t)
+        )
+        .domain([0, 1]);
+      const ramp = (v: number) => color(Math.sqrt(Math.max(v, 0) / maxVal));
       const zeroFill = 'var(--aw-vis-track, #EDF1F6)';
 
-      const weekdayOrder = _.range(7).map(i => (i + this.startOfWeek) % 7);
-      weekdayOrder.forEach((dayIdx, row) => {
+      rows.forEach((row, r) => {
         svg
           .append('text')
           .attr('x', margin.left - 6)
-          .attr('y', margin.top + row * ch + ch / 2 + 3.5)
+          .attr('y', margin.top + r * ch + ch / 2 + 3.5)
           .attr('text-anchor', 'end')
           .attr('font-size', 10)
           .style('fill', 'var(--aw-vis-subtext, #6B7280)')
-          .text(this.weekdayLabels[dayIdx]);
+          .text(row.label);
 
         _.range(24).forEach(hour => {
-          const v = cells[dayIdx][hour];
+          const v = row.hours[hour];
           const rect = g
             .append('rect')
-            .attr('class', 'punch-cell')
+            .attr('class', `punch-cell${row.future ? ' punch-cell--future' : ''}`)
             .attr('x', hour * cw + 1)
-            .attr('y', row * ch + 1)
+            .attr('y', r * ch + 1)
             .attr('width', cw - 2)
             .attr('height', ch - 2)
             .attr('rx', 2.5)
-            .attr('fill', v > 0 ? color(v) : zeroFill);
+            .attr('fill', v > 0 ? ramp(v) : zeroFill);
           rect
             .append('title')
             .text(
-              `${this.weekdayLabels[dayIdx]} ${String(hour).padStart(2, '0')}:00 · avg ` +
-                (v > 0 ? seconds_to_duration(v * 60) : 'no activity')
+              `${row.label} ${String(hour).padStart(2, '0')}:00 · ` +
+                (v > 0 ? seconds_to_duration(v * 60) : row.future ? 'not yet' : 'no activity')
             );
         });
       });

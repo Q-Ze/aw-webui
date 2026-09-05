@@ -81,19 +81,33 @@ div.vis-card(:class="{'vis-card--editable': editable}", v-if="editable || !activ
     div(v-if="type == 'category_donut'")
       aw-category-donut(:events="activityStore.category.top")
     div(v-if="type == 'hourly_rhythm'")
-      aw-hourly-rhythm
+      aw-hourly-rhythm(
+        :timeperiod-start="activityStore.query_options.timeperiod.start"
+        :timeperiod-length="activityStore.query_options.timeperiod.length"
+      )
     div(v-if="type == 'calendar_heatmap'")
       aw-calendar-heatmap
     div(v-if="type == 'category_weekly'")
-      aw-category-weekly
+      aw-category-weekly(
+        :timeperiod-start="activityStore.query_options.timeperiod.start"
+        :timeperiod-length="activityStore.query_options.timeperiod.length"
+        :week-start="settingsStore.startOfWeek"
+      )
     div(v-if="type == 'punchcard'")
-      aw-punchcard
+      aw-punchcard(
+        :timeperiod-start="activityStore.query_options.timeperiod.start"
+        :timeperiod-length="activityStore.query_options.timeperiod.length"
+        :week-start="settingsStore.startOfWeek"
+      )
     div(v-if="type == 'focus_sessions'")
       aw-focus-sessions
     div(v-if="type == 'switch_rate'")
       aw-switch-rate
     div(v-if="type == 'ai_digest'")
-      aw-digest-card
+      aw-digest-card(
+        :timeperiod-start="activityStore.query_options.timeperiod.start"
+        :timeperiod-length="activityStore.query_options.timeperiod.length"
+      )
     div(v-if="type == 'category_sunburst'")
       aw-sunburst-categories(:data="top_categories_hierarchy", style="height: 20em")
     div(v-if="type == 'timeline_barchart'")

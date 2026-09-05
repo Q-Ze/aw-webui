@@ -14,6 +14,7 @@ import { useSettingsStore } from '~/stores/settings';
 import { buildMultideviceHostParams } from '~/util/multidevice';
 import { clipEventToHours } from '~/util/hourclip';
 import { IEvent } from '~/util/interfaces';
+import { TimePeriod } from '~/util/timeperiod';
 
 export interface DailyHourlyMatrix {
   /** Days (YYYY-MM-DD) that actually had activity, oldest first. */
@@ -23,7 +24,7 @@ export interface DailyHourlyMatrix {
 }
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
-const LS_KEY = 'aw-hourly-matrix';
+const LS_KEY = 'aw-hourly-matrix-v2';
 const ANCHOR_DAYS = 60;
 
 interface AnchorPayload {
@@ -77,21 +78,102 @@ function loadAnchor(): Promise<AnchorPayload> {
   return anchorPromise;
 }
 
+/** Explicit per-day map for a list of calendar days (YYYY-MM-DD keys). */
+export async function getDailyHourlyActivityByDays(
+  dayKeys: string[]
+): Promise<Record<string, number[]>> {
+  const anchor = await loadAnchor();
+  const anchorEnd = startOfTodayLocal();
+  const anchorStart = new Date(anchorEnd);
+  anchorStart.setDate(anchorStart.getDate() - (ANCHOR_DAYS - 1));
+  const anchorEndKey = keyOf(anchorEnd);
+  const anchorStartKey = keyOf(anchorStart);
+
+  const out: Record<string, number[]> = {};
+  const have = new Set(anchor.days);
+  dayKeys.forEach(k => {
+    if (have.has(k)) out[k] = anchor.matrix[anchor.days.indexOf(k)];
+    else out[k] = new Array(24).fill(0);
+  });
+
+  // Days that are absent from the anchor but inside/before its span need a
+  // direct query (the anchor only stores days that returned any events — no,
+  // v2 keeps all days, but historical ranges pre-anchor still miss).
+  const fetchKeys = [...new Set(dayKeys.filter(k => !have.has(k) && k <= anchorEndKey))].sort();
+  if (fetchKeys.length > 0) {
+    const firstDay = new Date(fetchKeys[0] + 'T00:00:00');
+    const lastDay = new Date(fetchKeys[fetchKeys.length - 1] + 'T00:00:00');
+    const n = Math.round((lastDay.getTime() - firstDay.getTime()) / 86400000) + 1;
+    const res = await fetchDailyHourlyActivity(n, lastDay);
+    const fetched: Record<string, number[]> = {};
+    res.days.forEach((d, i) => (fetched[d] = res.matrix[i]));
+    fetchKeys.forEach(k => {
+      if (fetched[k]) out[k] = fetched[k];
+    });
+  }
+  void anchorStartKey;
+  return out;
+}
+
+/** Activity matrix for the selected calendar time period. */
+export async function getDailyHourlyActivityForTimeperiod(
+  timeperiod: TimePeriod
+): Promise<DailyHourlyMatrix> {
+  const start = new Date(timeperiod.start);
+  let count: number;
+  const unit = timeperiod.length[1];
+  if (unit.startsWith('day')) count = timeperiod.length[0];
+  else if (unit.startsWith('week')) count = 7 * timeperiod.length[0];
+  else if (unit.startsWith('month')) {
+    count = 0;
+    const cursor = new Date(start);
+    for (let i = 0; i < timeperiod.length[0]; i++) {
+      count += new Date(cursor.getFullYear(), cursor.getMonth() + i + 1, 0).getDate();
+    }
+  } else if (unit.startsWith('year')) {
+    count = 0;
+    for (let i = 0; i < timeperiod.length[0]; i++) {
+      count += new Date(start.getFullYear() + i, 1, 29).getMonth() === 1 ? 366 : 365;
+    }
+  } else throw new Error(`Invalid time period unit: ${unit}`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + count - 1);
+  return getDailyHourlyActivityBetween(start, end);
+}
+
+async function getDailyHourlyActivityBetween(
+  startDay: Date,
+  endDay: Date
+): Promise<DailyHourlyMatrix> {
+  const anchor = await loadAnchor();
+  const anchorEnd = startOfTodayLocal();
+  const anchorStart = new Date(anchorEnd);
+  anchorStart.setDate(anchorStart.getDate() - (ANCHOR_DAYS - 1));
+  if (startDay >= anchorStart && endDay <= anchorEnd) {
+    const startKey = keyOf(startDay);
+    const endKey = keyOf(endDay);
+    const first = Math.max(
+      anchor.days.findIndex(day => day >= startKey),
+      0
+    );
+    const endIdx = anchor.days.findIndex(day => day > endKey);
+    const last = endIdx === -1 ? anchor.days.length : endIdx;
+    return { days: anchor.days.slice(first, last), matrix: anchor.matrix.slice(first, last) };
+  }
+  const dayCount = Math.floor((endDay.getTime() - startDay.getTime()) / 86400000) + 1;
+  return fetchDailyHourlyActivity(dayCount, endDay);
+}
+
 /** Activity matrix for the nDays ending at endDate (default: today). */
 export async function getDailyHourlyActivity(
   nDays: number,
   endDate?: Date
 ): Promise<DailyHourlyMatrix> {
-  const anchor = await loadAnchor();
   const end = endDate || startOfTodayLocal();
-  const endKey = keyOf(new Date(end.getFullYear(), end.getMonth(), end.getDate()));
-  const endIdx = anchor.days.indexOf(endKey);
-  const lastIdx = endIdx >= 0 ? endIdx : anchor.days.length - 1;
-  const firstIdx = Math.max(lastIdx - nDays + 1, 0);
-  return {
-    days: anchor.days.slice(firstIdx, lastIdx + 1),
-    matrix: anchor.matrix.slice(firstIdx, lastIdx + 1),
-  };
+  const endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  const startDay = new Date(endDay);
+  startDay.setDate(startDay.getDate() - (nDays - 1));
+  return getDailyHourlyActivityBetween(startDay, endDay);
 }
 
 async function fetchDailyHourlyActivity(nDays: number, endDate: Date): Promise<DailyHourlyMatrix> {
@@ -148,10 +230,9 @@ async function fetchDailyHourlyActivity(nDays: number, endDate: Date): Promise<D
         hours[slice.hour] += slice.seconds / 60;
       });
     }
-    if (hours.some(v => v > 0)) {
-      days.push(dayKeys[i]);
-      matrix.push(hours);
-    }
+    // Keep zero-activity calendar days so slicing by date remains correct.
+    days.push(dayKeys[i]);
+    matrix.push(hours);
   }
   return { days, matrix };
 }

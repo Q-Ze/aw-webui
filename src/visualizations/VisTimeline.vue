@@ -140,6 +140,9 @@ export default {
       editingEventBucket: null,
 
       updateHasRun: false,
+      updateFrame: null,
+      wheelElement: null,
+      selectHandler: null,
     };
   },
   computed: {
@@ -173,7 +176,7 @@ export default {
           events = _.filter(events, e => e.duration > 1);
           console.log(`Filtered ${bucket.events.length - events.length} events`);
         }
-        events.sort((a, b) => a.timestamp.valueOf() - b.timestamp.valueOf());
+        events = events.slice().sort((a, b) => a.timestamp.valueOf() - b.timestamp.valueOf());
         _.each(events, e => {
           data.push({
             bucketId: bucket.id,
@@ -198,14 +201,14 @@ export default {
         return;
       }
 
-      this.update();
+      this.scheduleUpdate();
     },
     events() {
       if (this.events.length === undefined) {
         return;
       }
 
-      this.update();
+      this.scheduleUpdate();
     },
   },
   mounted() {
@@ -216,12 +219,13 @@ export default {
         passive: false,
       });
       this.timeline = new Timeline(el, [], [], this.options);
-      this.timeline.on('select', properties => {
+      this.selectHandler = properties => {
         // Sends both 'press' and 'tap' events, only one should trigger
         if (properties.event.type == 'tap') {
           this.onSelect(properties);
         }
-      });
+      };
+      this.timeline.on('select', this.selectHandler);
 
       this.ensureUpdate();
     });
@@ -230,6 +234,15 @@ export default {
     const el = this.$el.querySelector('#visualization');
     if (el) {
       el.removeEventListener('wheel', this.onHorizontalWheel, { capture: true });
+    }
+    if (this.updateFrame !== null) {
+      cancelAnimationFrame(this.updateFrame);
+      this.updateFrame = null;
+    }
+    if (this.timeline) {
+      if (this.selectHandler) this.timeline.off('select', this.selectHandler);
+      this.timeline.destroy();
+      this.timeline = null;
     }
   },
   methods: {
@@ -331,6 +344,13 @@ export default {
       if (!this.updateHasRun) {
         this.update();
       }
+    },
+    scheduleUpdate() {
+      if (this.updateFrame !== null) return;
+      this.updateFrame = requestAnimationFrame(() => {
+        this.updateFrame = null;
+        this.update();
+      });
     },
     update() {
       // Guard against the buckets/events watch firing before mounted's

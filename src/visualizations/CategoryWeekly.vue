@@ -34,120 +34,154 @@ interface DayCat {
 
 export default {
   name: 'aw-category-weekly',
+  props: {
+    timeperiodStart: { type: String, default: null },
+    timeperiodLength: { type: Array, default: () => [1, 'week'] },
+    weekStart: { type: String, default: 'Monday' },
+  },
   data() {
-    return { series: null as { name: string; color: string; totalShort: string }[] | null };
+    return {
+      series: null as { name: string; color: string; totalShort: string }[] | null,
+      loadToken: 0,
+    };
+  },
+  watch: {
+    timeperiodStart() {
+      this.load();
+    },
+    timeperiodLength() {
+      this.load();
+    },
   },
   async mounted() {
-    try {
-      await useBucketsStore().ensureLoaded();
-      const bucketsStore = useBucketsStore();
-      const settingsStore = useSettingsStore();
-      const categoryStore = useCategoryStore();
-
-      // Host selection mirrors the multidevice logic in the activity store.
-      let hosts: string[] = [];
-      if (settingsStore.useMultidevice) {
-        hosts = bucketsStore.hosts.filter(h => h && !h.startsWith('fakedata'));
-      } else {
-        hosts = [bucketsStore.hosts.find(h => h) || ''];
-      }
-      const { host_params, hosts_with_buckets } = buildMultideviceHostParams(
-        hosts,
-        h => bucketsStore.bucketsWindow(h),
-        h => bucketsStore.bucketsAFK(h)
-      );
-      if (hosts_with_buckets.length === 0) {
-        this.series = [];
-        return;
-      }
-
-      const today = moment().startOf('day');
-      const periods: string[] = [];
-      const days: string[] = [];
-      for (let i = 6; i >= 0; i--) {
-        const d = today.clone().subtract(i, 'days');
-        days.push(d.format('YYYY-MM-DD'));
-        periods.push(
-          d.format('YYYY-MM-DDT00:00:00+00:00/') +
-            d.clone().add(1, 'day').format('YYYY-MM-DDT00:00:00+00:00')
-        );
-      }
-
-      const q = queries.categoryQuery({
-        hosts: hosts_with_buckets,
-        filter_afk: true,
-        categories: categoryStore.classes_for_query,
-        // Must be null (not []) when no filter is active: canonicalEvents
-        // treats a truthy empty list as a whitelist matching nothing.
-        filter_categories: null,
-        host_params,
-        always_active_pattern: '',
-      } as any);
-
-      const data = await getClient().query(periods, q, { name: 'weeklyCategoryQuery' });
-
-      // Flatten per-day categorized events into day -> {category: seconds}.
-      // aw-client returns one object per period ({ cat_events: [...] });
-      // accept the raw-REST [[{cat_events}]] shape as well, just in case.
-      const dayCats: DayCat[] = days.map(day => ({ day, values: {} }));
-      _.each(data, (result: any, i: number) => {
-        const catEvents =
-          (result && (result.cat_events || (result[0] && result[0].cat_events))) || [];
-        _.each(catEvents, e => {
-          // Some merged/categorized result events can lack data or duration
-          // (e.g. flood edge cases); skip them rather than crash the chart.
-          const cat = ((e.data && e.data['$category']) as string[]) || null;
-          if (!cat) return;
-          const name = cat.join(' > ');
-          dayCats[i].values[name] = (dayCats[i].values[name] || 0) + (e.duration || 0);
-        });
-      });
-
-      // Top 6 categories by week total; the rest collapse into "Other".
-      const totals: Record<string, number> = {};
-      _.each(dayCats, dc =>
-        _.each(dc.values, (v, k) => {
-          totals[k] = (totals[k] || 0) + v;
-        })
-      );
-      const topCats = _.slice(
-        _.sortBy(_.toPairs(totals), ([, v]) => -v),
-        0,
-        6
-      ).map(([k]) => k);
-      const catKeys = [...topCats, '__other__'];
-
-      const stackData: Record<string, any>[] = dayCats.map(dc => {
-        const row: Record<string, any> = { day: dc.day };
-        _.each(catKeys, k => {
-          row[k] = 0;
-        });
-        _.each(dc.values, (v, k) => {
-          const key = topCats.includes(k) ? k : '__other__';
-          row[key] += v;
-        });
-        return row;
-      });
-
-      const seriesInfo = catKeys
-        .map(k => {
-          const total = _.sumBy(stackData, k);
-          return {
-            key: k,
-            name: k === '__other__' ? 'Other' : k,
-            color: k === '__other__' ? '#B0BEC5' : categoryStore.get_category_color(k.split(' > ')),
-            total,
-            totalShort: shortDur(total),
-          };
-        })
-        .filter(s => s.total > 0);
-      this.$nextTick(() => this.render(stackData, seriesInfo));
-    } catch (e) {
-      console.error('aw-category-weekly failed:', e);
-      this.series = [];
-    }
+    await this.load();
   },
   methods: {
+    async load() {
+      const token = ++this.loadToken;
+      try {
+        await useBucketsStore().ensureLoaded();
+        const bucketsStore = useBucketsStore();
+        const settingsStore = useSettingsStore();
+        const categoryStore = useCategoryStore();
+
+        // Host selection mirrors the multidevice logic in the activity store.
+        let hosts: string[] = [];
+        if (settingsStore.useMultidevice) {
+          hosts = bucketsStore.hosts.filter(h => h && !h.startsWith('fakedata'));
+        } else {
+          hosts = [bucketsStore.hosts.find(h => h) || ''];
+        }
+        const { host_params, hosts_with_buckets } = buildMultideviceHostParams(
+          hosts,
+          h => bucketsStore.bucketsWindow(h),
+          h => bucketsStore.bucketsAFK(h)
+        );
+        if (hosts_with_buckets.length === 0) {
+          this.series = [];
+          return;
+        }
+
+        // The week shown is the one CONTAINING the selected date, anchored at
+        // the configured week start (not "selected date and the six after").
+        const ws = this.weekStart === 'Monday' ? 1 : this.weekStart === 'Saturday' ? 6 : 0;
+        const anchor = moment(this.timeperiodStart || undefined);
+        const periodStart = anchor
+          .clone()
+          .startOf(ws === 1 ? 'isoWeek' : 'week')
+          .subtract(ws === 6 ? 2 : 0, 'days');
+        const periods: string[] = [];
+        const days: string[] = [];
+        for (let i = 0; i < 7; i++) {
+          const d = periodStart.clone().add(i, 'days');
+          days.push(d.format('YYYY-MM-DD'));
+          periods.push(
+            d.format('YYYY-MM-DDT00:00:00Z') +
+              '/' +
+              d.clone().add(1, 'day').format('YYYY-MM-DDT00:00:00Z')
+          );
+        }
+
+        const q = queries.categoryQuery({
+          hosts: hosts_with_buckets,
+          filter_afk: true,
+          categories: categoryStore.classes_for_query,
+          // Must be null (not []) when no filter is active: canonicalEvents
+          // treats a truthy empty list as a whitelist matching nothing.
+          filter_categories: null,
+          host_params,
+          always_active_pattern: '',
+        } as any);
+
+        const data = await getClient().query(periods, q, { name: 'weeklyCategoryQuery' });
+        if (token !== this.loadToken) return;
+
+        // Flatten per-day categorized events into day -> {category: seconds}.
+        // aw-client returns one object per period ({ cat_events: [...] });
+        // accept the raw-REST [[{cat_events}]] shape as well, just in case.
+        const dayCats: DayCat[] = days.map(day => ({ day, values: {} }));
+        _.each(data, (result: any, i: number) => {
+          const catEvents =
+            (result && (result.cat_events || (result[0] && result[0].cat_events))) || [];
+          _.each(catEvents, e => {
+            // Some merged/categorized result events can lack data or duration
+            // (e.g. flood edge cases); skip them rather than crash the chart.
+            const cat = ((e.data && e.data['$category']) as string[]) || null;
+            if (!cat) return;
+            const name = cat.join(' > ');
+            dayCats[i].values[name] = (dayCats[i].values[name] || 0) + (e.duration || 0);
+          });
+        });
+
+        // Top 6 categories by week total; the rest collapse into "Other".
+        const totals: Record<string, number> = {};
+        _.each(dayCats, dc =>
+          _.each(dc.values, (v, k) => {
+            totals[k] = (totals[k] || 0) + v;
+          })
+        );
+        const topCats = _.slice(
+          _.sortBy(_.toPairs(totals), ([, v]) => -v),
+          0,
+          6
+        ).map(([k]) => k);
+        const catKeys = [...topCats, '__other__'];
+
+        const stackData: Record<string, any>[] = dayCats.map(dc => {
+          const row: Record<string, any> = { day: dc.day };
+          _.each(catKeys, k => {
+            row[k] = 0;
+          });
+          _.each(dc.values, (v, k) => {
+            const key = topCats.includes(k) ? k : '__other__';
+            row[key] += v;
+          });
+          return row;
+        });
+
+        const seriesInfo = catKeys
+          .map(k => {
+            const total = _.sumBy(stackData, k);
+            return {
+              key: k,
+              name: k === '__other__' ? 'Other' : k,
+              color:
+                k === '__other__' ? '#B0BEC5' : categoryStore.get_category_color(k.split(' > ')),
+              total,
+              totalShort: shortDur(total),
+            };
+          })
+          .filter(s => s.total > 0);
+        this.$nextTick(() => {
+          if (token === this.loadToken) this.render(stackData, seriesInfo);
+        });
+      } catch (e) {
+        if (token === this.loadToken) {
+          console.error('aw-category-weekly failed:', e);
+          this.series = [];
+        }
+      }
+    },
     render(
       stackData: Record<string, any>[],
       seriesInfo: { key: string; name: string; color: string; total: number }[]

@@ -1,6 +1,13 @@
 <template lang="pug">
-div
-  iframe(:src='src', frameborder='0')
+  div.custom-visualization
+    div.aw-loading(v-if="loading") Loading…
+    iframe(
+      :src="src"
+      frameborder="0"
+      loading="lazy"
+      @load="loading = false"
+      :title="title || visname"
+    )
 </template>
 
 <script lang="js">
@@ -12,6 +19,9 @@ export default {
   props: {
     visname: String,
     title: String,
+  },
+  data() {
+    return { loading: true };
   },
   computed: {
     src: function () {
@@ -34,3 +44,22 @@ export default {
   },
 };
 </script>
+<style scoped>
+.custom-visualization {
+  position: relative;
+  min-height: 360px;
+}
+.custom-visualization iframe {
+  display: block;
+  width: 100%;
+  min-height: 360px;
+  border: 0;
+}
+.aw-loading {
+  position: absolute;
+  inset: 1rem;
+  display: grid;
+  place-items: center;
+  color: #8a8f98;
+}
+</style>

@@ -62,6 +62,59 @@ describe('VisTimeline zoom-anchor regression (#847)', () => {
     });
   });
 
+  describe('scheduleUpdate', () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    test('coalesces updates into one animation frame', () => {
+      const callbacks = [];
+      jest.spyOn(global, 'requestAnimationFrame').mockImplementation(callback => {
+        callbacks.push(callback);
+        return callbacks.length;
+      });
+      const vm = {
+        updateFrame: null,
+        update: jest.fn(),
+      };
+
+      VisTimeline.methods.scheduleUpdate.call(vm);
+      VisTimeline.methods.scheduleUpdate.call(vm);
+
+      expect(global.requestAnimationFrame).toHaveBeenCalledTimes(1);
+      expect(vm.update).not.toHaveBeenCalled();
+      callbacks[0]();
+      expect(vm.update).toHaveBeenCalledTimes(1);
+      expect(vm.updateFrame).toBeNull();
+    });
+  });
+
+  describe('beforeDestroy', () => {
+    test('cancels a pending frame and destroys the timeline', () => {
+      const cancelAnimationFrameSpy = jest
+        .spyOn(global, 'cancelAnimationFrame')
+        .mockImplementation(() => undefined);
+      const timeline = { off: jest.fn(), destroy: jest.fn() };
+      const vm = {
+        $el: document.createElement('div'),
+        updateFrame: 7,
+        timeline,
+        selectHandler: jest.fn(),
+        onHorizontalWheel: jest.fn(),
+      };
+      const visualization = document.createElement('div');
+      visualization.id = 'visualization';
+      vm.$el.appendChild(visualization);
+
+      VisTimeline.beforeDestroy.call(vm);
+
+      expect(cancelAnimationFrameSpy).toHaveBeenCalledWith(7);
+      expect(timeline.off).toHaveBeenCalledWith('select', vm.selectHandler);
+      expect(timeline.destroy).toHaveBeenCalledTimes(1);
+      expect(vm.timeline).toBeNull();
+      expect(vm.updateFrame).toBeNull();
+      cancelAnimationFrameSpy.mockRestore();
+    });
+  });
+
   describe('onHorizontalWheel', () => {
     const { onHorizontalWheel } = VisTimeline.methods;
 

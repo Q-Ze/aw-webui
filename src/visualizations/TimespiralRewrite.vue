@@ -46,7 +46,11 @@ export default {
     days: { type: Number, default: 14 },
   },
   data() {
-    return { size: 560 };
+    return {
+      size: 560,
+      renderFrame: null,
+      resizeObserver: null,
+    };
   },
   computed: {
     segments(): Segment[] {
@@ -75,21 +79,35 @@ export default {
   },
   watch: {
     events() {
-      this.render();
+      this.scheduleRender();
     },
     days() {
-      this.render();
+      this.scheduleRender();
     },
   },
   mounted() {
-    this.render();
+    this.resizeObserver = new ResizeObserver(() => this.scheduleRender());
+    this.resizeObserver.observe(this.$refs.wrap as HTMLElement);
+    this.scheduleRender();
+  },
+  beforeDestroy() {
+    if (this.resizeObserver) this.resizeObserver.disconnect();
+    if (this.renderFrame !== null) cancelAnimationFrame(this.renderFrame);
   },
   methods: {
+    scheduleRender() {
+      if (this.renderFrame !== null) return;
+      this.renderFrame = requestAnimationFrame(() => {
+        this.renderFrame = null;
+        this.render();
+      });
+    },
     render() {
       const svgEl = this.$refs.svg as SVGSVGElement;
       const wrap = this.$refs.wrap as HTMLElement;
       if (!svgEl) return;
       svgEl.innerHTML = '';
+      d3.select(wrap).selectAll('.aw-vis-tooltip').remove();
       if ((this.events as IEvent[]).length === 0) return;
 
       const size = Math.min(this.size, Math.max(wrap.clientWidth || this.size, 320));

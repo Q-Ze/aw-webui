@@ -30,7 +30,14 @@ const HEAT_COLORS = ['#EAF2EC', '#C8E5CD', '#93CFA5', '#57AE74', '#2E8B57', '#1E
 export default {
   name: 'aw-calendar-heatmap',
   data() {
-    return { loaded: false, error: null as string | null, byDate: {} as Record<string, number> };
+    return {
+      loaded: false,
+      error: null as string | null,
+      byDate: {} as Record<string, number>,
+      renderFrame: null,
+      resizeObserver: null,
+      isAlive: true,
+    };
   },
   async mounted() {
     try {
@@ -88,16 +95,33 @@ export default {
       });
       this.byDate = byDate;
       this.loaded = true;
-      this.$nextTick(() => this.render());
+      this.resizeObserver = new ResizeObserver(() => this.scheduleRender());
+      this.resizeObserver.observe(this.$el as HTMLElement);
+      this.scheduleRender();
     } catch (e) {
-      this.error = (e as Error).message || String(e);
+      if (this.isAlive) this.error = (e as Error).message || String(e);
     }
   },
+  beforeDestroy() {
+    this.isAlive = false;
+    if (this.resizeObserver) this.resizeObserver.disconnect();
+    if (this.renderFrame !== null) cancelAnimationFrame(this.renderFrame);
+    const el = this.$el as HTMLElement;
+    if (el) d3.select(el).selectAll('.aw-vis-tooltip').remove();
+  },
   methods: {
+    scheduleRender() {
+      if (this.renderFrame !== null) return;
+      this.renderFrame = requestAnimationFrame(() => {
+        this.renderFrame = null;
+        this.render();
+      });
+    },
     render() {
       const svgEl = this.$refs.svg as SVGSVGElement;
       if (!svgEl || !this.loaded) return;
       svgEl.innerHTML = '';
+      d3.select(svgEl.parentElement).selectAll('.aw-vis-tooltip').remove();
 
       const svg = d3.select(svgEl);
       const el = svgEl.parentElement as HTMLElement;

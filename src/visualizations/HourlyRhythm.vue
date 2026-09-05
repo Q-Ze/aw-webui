@@ -2,7 +2,7 @@
 div
   svg.vis-svg(ref="svg", width="100%", :height="height + 34")
   div.small.text-muted(v-if="days > 0")
-    | Avg active minutes per hour · {{ days }} day{{ days === 1 ? '' : 's' }} ending {{ endLabel }} (window/AFK-based)
+    | Average per day · {{ days }} calendar day{{ days === 1 ? '' : 's' }} ending {{ endLabel }} (window/AFK-based)
     span(v-if="peak") · peak {{ peak.label }} ({{ peak.avg }})
   div.small.text-muted(v-else-if="loaded") No activity data for the past 30 days.
   div.small.text-muted(v-else) Loading…
@@ -23,29 +23,34 @@ import * as d3 from 'd3';
 import _ from 'lodash';
 
 import { seconds_to_duration } from '~/util/time';
-import { getDailyHourlyActivity } from '~/util/hourlyMatrix';
-import { useActivityStore } from '~/stores/activity';
+import { getDailyHourlyActivityForTimeperiod } from '~/util/hourlyMatrix';
+import { TimePeriod } from '~/util/timeperiod';
 
 const height = 150;
-const WINDOW_DAYS = 30;
 
 // Chart data is a trailing-window average of canonical (window ∩ not-afk)
 // activity — the same source as the Timeline barchart — not the AFK
 // store's merged history. It does not depend on the selected date.
 export default {
   name: 'aw-hourly-rhythm',
+  props: {
+    timeperiodStart: { type: String, default: null },
+    timeperiodLength: { type: Array, default: () => [1, 'day'] },
+  },
   data() {
     return {
-      activityStore: useActivityStore(),
       loaded: false,
+      loadingToken: 0,
       days: 0,
       endLabel: '',
       peak: null as { label: string; avg: string } | null,
     };
   },
   watch: {
-    // Follow the browsed date: the window is the 30 days ending at it.
-    'activityStore.query_options.timeperiod': function () {
+    timeperiodStart() {
+      this.load();
+    },
+    timeperiodLength() {
       this.load();
     },
   },
@@ -54,6 +59,8 @@ export default {
   },
   methods: {
     async load() {
+      const token = ++this.loadingToken;
+      this.loaded = false;
       try {
         // The util anchors a single 60-day server query and slices windows
         // locally — switching dates costs no extra queries.
@@ -61,7 +68,12 @@ export default {
         this.endLabel = `${String(end.getMonth() + 1).padStart(2, '0')}/${String(
           end.getDate()
         ).padStart(2, '0')}`;
-        const { days, matrix } = await getDailyHourlyActivity(WINDOW_DAYS, end);
+        const period: TimePeriod = {
+          start: this.timeperiodStart || new Date().toISOString(),
+          length: this.timeperiodLength,
+        };
+        const { days, matrix } = await getDailyHourlyActivityForTimeperiod(period);
+        if (token !== this.loadingToken) return;
         const d = days;
         const m = matrix;
         this.days = d.length;
@@ -73,13 +85,16 @@ export default {
           this.$nextTick(() => this.render(avg));
         }
       } catch (e) {
-        console.error('aw-hourly-rhythm failed:', e);
+        if (token === this.loadingToken) {
+          console.error('aw-hourly-rhythm failed:', e);
+          this.loaded = true;
+        }
+        return;
       }
-      this.loaded = true;
+      if (token === this.loadingToken) this.loaded = true;
     },
     selectedDate(): Date {
-      const qo = useActivityStore().query_options;
-      const d = qo ? new Date(qo.timeperiod.start) : new Date();
+      const d = this.timeperiodStart ? new Date(this.timeperiodStart) : new Date();
       return new Date(d.getFullYear(), d.getMonth(), d.getDate());
     },
     render(avg: number[]) {
