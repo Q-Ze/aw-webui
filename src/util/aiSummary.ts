@@ -42,6 +42,8 @@ export function buildSummaryText(data: ActivitySummaryData): string {
 }
 
 export type LLMProvider = 'openai' | 'anthropic';
+export type ThinkingMode = 'enabled' | 'disabled';
+export type ReasoningEffort = 'low' | 'high' | 'max';
 
 export interface LLMConfig {
   provider: LLMProvider;
@@ -49,9 +51,16 @@ export interface LLMConfig {
   model: string;
   /** Override the provider's default API endpoint (e.g. an OpenAI-compatible proxy). */
   baseUrl?: string;
+  /** Response token cap for digest generation (default 2048). */
+  maxTokens?: number;
+  /** Thinking mode switch: {"thinking":{"type":...}} (DeepSeek-style, shared body field). */
+  thinking?: ThinkingMode;
+  /** Reasoning effort: reasoning_effort (OpenAI format) / output_config.effort (Anthropic format). */
+  reasoningEffort?: ReasoningEffort;
 }
 
 const LS_KEY = 'aw-ai-summary-llm-config';
+export const DEFAULT_MAX_TOKENS = 2048;
 
 export function loadLLMConfig(): Partial<LLMConfig> {
   try {
@@ -60,6 +69,19 @@ export function loadLLMConfig(): Partial<LLMConfig> {
     if (config.provider !== 'openai' && config.provider !== 'anthropic') {
       delete config.provider;
       delete config.model;
+    }
+    if (
+      typeof config.maxTokens !== 'number' ||
+      !Number.isFinite(config.maxTokens) ||
+      config.maxTokens < 1
+    ) {
+      delete config.maxTokens;
+    }
+    if (config.thinking !== 'enabled' && config.thinking !== 'disabled') {
+      delete config.thinking;
+    }
+    if (!['low', 'high', 'max'].includes(config.reasoningEffort as string)) {
+      delete config.reasoningEffort;
     }
     return config;
   } catch {
@@ -77,8 +99,90 @@ export function saveLLMConfig(config: Partial<LLMConfig>, rememberKey = false): 
   localStorage.setItem(LS_KEY, JSON.stringify(persistedConfig));
 }
 
-export async function callLLM(config: LLMConfig, userMessage: string): Promise<string> {
+export interface LLMRawExchange {
+  endpoint: string;
+  model: string;
+  requestBody: string;
+  responseRaw: string;
+  ok: boolean;
+  at: number;
+}
+
+export async function callLLM(
+  config: LLMConfig,
+  userMessage: string,
+  onRaw?: (exchange: LLMRawExchange) => void
+): Promise<string> {
   if (!config.apiKey) throw new Error('API key is required');
+
+  const attempt = async (): Promise<string> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120000);
+    try {
+      return await callLLMOnce(config, userMessage, controller.signal, onRaw);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  try {
+    const text = await attempt();
+    if (!text || !text.trim()) throw new Error('LLM 返回了空内容（请重试，或换一个模型）');
+    return text;
+  } catch (e) {
+    // One retry for network hiccups / flaky relays — these are the exact
+    // failures that made digests "sometimes silently not arrive".
+    const msg = (e as Error).message || String(e);
+    const retryable = /Failed to fetch|NetworkError|aborted|timeout|5\d\d|ECONN/i.test(msg);
+    if (!retryable) throw e;
+    await new Promise(r => setTimeout(r, 1500));
+    const text = await attempt();
+    if (!text || !text.trim()) throw new Error('LLM 返回了空内容（请重试，或换一个模型）');
+    return text;
+  }
+}
+
+async function callLLMOnce(
+  config: LLMConfig,
+  userMessage: string,
+  signal: AbortSignal,
+  onRaw?: (exchange: LLMRawExchange) => void
+): Promise<string> {
+  const parse = async (res: Response, endpoint: string, model: string): Promise<string> => {
+    const raw = await res.text();
+    onRaw?.({
+      endpoint,
+      model,
+      requestBody: userMessage,
+      responseRaw: raw,
+      ok: res.ok,
+      at: Date.now(),
+    });
+    if (!res.ok) {
+      throw new Error(`LLM request failed (${res.status}): ${raw.slice(0, 200)}`);
+    }
+    let data: any;
+    try {
+      data = JSON.parse(raw);
+    } catch (e) {
+      throw new Error(`LLM 响应不是 JSON（前 200 字符）：${raw.slice(0, 200)}`);
+    }
+    return data.choices?.[0]?.message?.content ?? data.content?.[0]?.text ?? '';
+  };
+
+  // Optional reasoning controls (DeepSeek-style): thinking switch is a shared
+  // body field; effort maps to reasoning_effort (OpenAI format) or
+  // output_config.effort (Anthropic format). Unset fields are not sent, so
+  // the provider default applies.
+  const thinkingFields = (provider: LLMProvider): Record<string, unknown> => {
+    const fields: Record<string, unknown> = {};
+    if (config.thinking) fields.thinking = { type: config.thinking };
+    if (config.reasoningEffort) {
+      if (provider === 'anthropic') fields.output_config = { effort: config.reasoningEffort };
+      else fields.reasoning_effort = config.reasoningEffort;
+    }
+    return fields;
+  };
 
   if (config.provider === 'openai') {
     const endpoint =
@@ -89,18 +193,15 @@ export async function callLLM(config: LLMConfig, userMessage: string): Promise<s
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
+      signal,
       body: JSON.stringify({
         model: config.model || 'gpt-4o-mini',
         messages: [{ role: 'user', content: userMessage }],
-        max_tokens: 1024,
+        max_tokens: config.maxTokens || DEFAULT_MAX_TOKENS,
+        ...thinkingFields('openai'),
       }),
     });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`LLM request failed (${res.status}): ${text.slice(0, 200)}`);
-    }
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content ?? '';
+    return parse(res, endpoint, config.model || 'gpt-4o-mini');
   }
 
   if (config.provider === 'anthropic') {
@@ -113,18 +214,15 @@ export async function callLLM(config: LLMConfig, userMessage: string): Promise<s
         'x-api-key': config.apiKey,
         'anthropic-version': '2023-06-01',
       },
+      signal,
       body: JSON.stringify({
         model: config.model || 'claude-haiku-4-5-20251001',
-        max_tokens: 1024,
+        max_tokens: config.maxTokens || DEFAULT_MAX_TOKENS,
         messages: [{ role: 'user', content: userMessage }],
+        ...thinkingFields('anthropic'),
       }),
     });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`LLM request failed (${res.status}): ${text.slice(0, 200)}`);
-    }
-    const data = await res.json();
-    return data.content?.[0]?.text ?? '';
+    return parse(res, endpoint, config.model || 'claude-haiku-4-5-20251001');
   }
 
   throw new Error(`Unknown provider: ${config.provider}`);
