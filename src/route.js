@@ -24,6 +24,7 @@ const AISummaryView = () => import('./views/AISummaryView.vue');
 const Alerts = () => import('./views/Alerts.vue');
 const Search = () => import('./views/Search.vue');
 const Report = () => import('./views/Report.vue');
+const AnnualReport = () => import('./views/AnnualReport.vue');
 const TimespiralView = () => import('./views/TimespiralView.vue');
 const Dev = () => import('./views/Dev.vue');
 const Graph = () => import('./views/Graph.vue');
@@ -66,6 +67,7 @@ const router = new VueRouter({
     { path: '/trends', component: Trends, meta: { fullContainer: true } },
     { path: '/trends/:host', component: Trends, meta: { fullContainer: true } },
     { path: '/report', component: Report },
+    { path: '/annual-report/:year?', component: AnnualReport, props: true },
     { path: '/query', component: QueryExplorer },
     { path: '/alerts', component: Alerts },
     { path: '/timespiral', component: TimespiralView },

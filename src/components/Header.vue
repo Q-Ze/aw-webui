@@ -80,6 +80,9 @@ div(:class="{'fixed-top-padding': fixedTopMenu}")
           b-dropdown-item(to="/timespiral")
             icon(name="history")
             | {{ $t('nav.timespiral') }}
+          b-dropdown-item(to="/annual-report")
+            icon(name="award")
+            | 年度报告
           b-dropdown-item(to="/query")
             icon(name="code")
             | {{ $t('nav.query') }}
@@ -121,6 +124,7 @@ import 'vue-awesome/icons/robot';
 import 'vue-awesome/icons/cog';
 import 'vue-awesome/icons/tools';
 import 'vue-awesome/icons/history';
+import 'vue-awesome/icons/award';
 import 'vue-awesome/icons/project-diagram';
 import 'vue-awesome/icons/ellipsis-h';
 import 'vue-awesome/icons/mobile';
