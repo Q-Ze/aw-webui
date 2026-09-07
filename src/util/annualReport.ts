@@ -255,9 +255,12 @@ async function fetchYearApps(year: number): Promise<[string, number][]> {
 
 /** Full-year hour detail: hour-of-day profile, weekday×hour grid, and per
  *  4am-day first/last active hours (boot/shutdown + late-night share).
- *  Queried in sequential monthly batches (≈720 hour-periods each) so the
- *  single-threaded server is never hit with all 8760 periods at once. */
-async function fetchYearSamples(year: number): Promise<{
+ *  Queried in sequential half-month batches (≈360 hour-periods each, the
+ *  proven heatmap size) so no single request can exceed the client timeout. */
+async function fetchYearSamples(
+  year: number,
+  onProgress?: (done: number, total: number) => void
+): Promise<{
   hourly: number[];
   weekdayHour: number[][];
   boot: BootShutdown;
@@ -299,15 +302,34 @@ async function fetchYearSamples(year: number): Promise<{
   const dayLast: Record<string, number> = {};
   const THRESH = 60; // an hour counts as active past 60s
 
+  // Half-month chunks (~360 hour-periods): same size as the proven-fast
+  // calendar-heatmap query, so no single request can blow the axios timeout
+  // the way full-month (744-period) batches occasionally did.
+  const CHUNK_DAYS = 15;
+  const totalDays = yearEnd.diff(yearStart, 'days') + 1;
+  const totalChunks = Math.max(1, Math.ceil(totalDays / CHUNK_DAYS));
+  let chunkIdx = 0;
+
+  const queryChunkWithRetry = async (periods: string[]): Promise<any> => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await getClient().query(periods, q, { name: 'annualHourlyQuery' });
+      } catch (e) {
+        if (attempt >= 1) throw e;
+        await new Promise(res => setTimeout(res, 1500));
+      }
+    }
+  };
+
   for (
-    let monthStart = yearStart.clone();
-    monthStart.isSameOrBefore(yearEnd, 'day');
-    monthStart.add(1, 'month')
+    let chunkStart = yearStart.clone();
+    chunkStart.isSameOrBefore(yearEnd, 'day');
+    chunkStart.add(CHUNK_DAYS, 'days')
   ) {
-    const monthEnd = moment.min(monthStart.clone().endOf('month').startOf('day'), yearEnd);
+    const chunkEnd = moment.min(chunkStart.clone().add(CHUNK_DAYS - 1, 'days'), yearEnd);
     const periods: string[] = [];
     const meta: { date: string; hour: number; weekday: number }[] = [];
-    for (let d = monthStart.clone(); d.isSameOrBefore(monthEnd); d.add(1, 'day')) {
+    for (let d = chunkStart.clone(); d.isSameOrBefore(chunkEnd); d.add(1, 'day')) {
       for (let h = 0; h < 24; h++) {
         const s = d.clone().add(h, 'hours');
         const e = s.clone().add(1, 'hour');
@@ -318,7 +340,9 @@ async function fetchYearSamples(year: number): Promise<{
       }
     }
     if (periods.length === 0) continue;
-    const data = await getClient().query(periods, q, { name: 'annualHourlyQuery' });
+    chunkIdx += 1;
+    onProgress?.(chunkIdx, totalChunks);
+    const data = await queryChunkWithRetry(periods);
     _.each(periods, (_p, i) => {
       const res = data && data[i];
       const dur = ((res && (res.duration ?? (res[0] && res[0].duration) ?? 0)) || 0) as number;
@@ -525,7 +549,11 @@ async function fetchBusiestWhat(
   return out;
 }
 
-export async function getYearReport(year: number, force = false): Promise<YearReport> {
+export async function getYearReport(
+  year: number,
+  force = false,
+  onProgress?: (done: number, total: number) => void
+): Promise<YearReport> {
   if (!force) {
     const cached = getCachedYearReport(year);
     if (cached) return cached;
@@ -534,7 +562,7 @@ export async function getYearReport(year: number, force = false): Promise<YearRe
     fetchYearDaily(year),
     fetchYearCategories(year),
     fetchYearApps(year),
-    fetchYearSamples(year),
+    fetchYearSamples(year, onProgress),
   ]);
 
   // Busiest candidates from the daily totals, then one query for "what".

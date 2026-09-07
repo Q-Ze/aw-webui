@@ -9,6 +9,9 @@ div.annual-report
     b-button.ml-1(size="sm", variant="outline-secondary", v-if="yearNum < currentYear", :to="`/annual-report/${yearNum + 1}`") {{ yearNum + 1 }} →
 
   b-alert(v-if="error", variant="danger", show) {{ error }}
+  div.small.text-muted.mt-2(v-if="loading")
+    b-spinner.mr-1(small)
+    | 首次计算需要逐段扫描全年数据，请稍候{{ loadingText ? '（' + loadingText + '）' : '…' }}
 
   div(v-if="stats")
     // 开场
@@ -593,6 +596,7 @@ export default {
       prevStats: null as YearReportStats | null,
       prevLoading: false,
       loading: false,
+      loadingText: '',
       error: '',
       currentYear: moment().year(),
       firstKnownYear: 2020,
@@ -975,13 +979,16 @@ export default {
     },
     async load(force = false) {
       this.loading = true;
+      this.loadingText = '';
       this.error = '';
       this.aiText = '';
       this.aiAt = '';
       this.aiError = '';
       this.aiKey = !!loadLLMConfig().apiKey;
       try {
-        this.report = await getYearReport(this.yearNum, force);
+        this.report = await getYearReport(this.yearNum, force, (done, total) => {
+          this.loadingText = `全年小时数据 ${done}/${total} 段`;
+        });
         this.stats = computeStats(this.report);
         try {
           const cachedAi = JSON.parse(
@@ -998,6 +1005,7 @@ export default {
         this.error = (e as Error).message || String(e);
       }
       this.loading = false;
+      this.loadingText = '';
       this.loadCompare();
     },
   },
