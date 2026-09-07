@@ -26,6 +26,8 @@ export interface DailyHourlyMatrix {
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const LS_KEY = 'aw-hourly-matrix-v2';
 const ANCHOR_DAYS = 60;
+/** Long ranges clamp to this span (the punchcard's historical window). */
+const MAX_QUERY_DAYS = 60;
 
 interface AnchorPayload {
   at: number;
@@ -138,7 +140,50 @@ export async function getDailyHourlyActivityForTimeperiod(
   } else throw new Error(`Invalid time period unit: ${unit}`);
   const end = new Date(start);
   end.setDate(end.getDate() + count - 1);
-  return getDailyHourlyActivityBetween(start, end);
+  // Long ranges used to be fixed 30/60-day windows; querying a full year of
+  // window∩afk events overloads the single-threaded server. Rules:
+  //  - never look into the future (year periods span selected→+1y, mostly
+  //    ahead, so their effective end is capped at today);
+  //  - spans over 60 days clamp to the last 60 days of the effective range;
+  //  - year views keep a trailing 60-day window (their start IS the selected
+  //    day, so a plain intersection would shrink to a single day).
+  const today = startOfTodayLocal();
+  let effStart = new Date(start);
+  let effEnd = new Date(end);
+  if (effEnd.getTime() > today.getTime()) {
+    effEnd = new Date(today);
+  }
+  if (unit.startsWith('year')) {
+    effStart = new Date(effEnd);
+    effStart.setDate(effStart.getDate() - (MAX_QUERY_DAYS - 1));
+  } else {
+    if (effStart.getTime() > effEnd.getTime()) {
+      return { days: [], matrix: [] };
+    }
+    const spanDays = Math.round((effEnd.getTime() - effStart.getTime()) / 86400000) + 1;
+    if (spanDays > MAX_QUERY_DAYS) {
+      effStart = new Date(effEnd);
+      effStart.setDate(effStart.getDate() - (MAX_QUERY_DAYS - 1));
+    }
+  }
+  return getDailyHourlyActivityBetweenCached(effStart, effEnd);
+}
+
+// Short-TTL result cache: rhythm/punchcard (and on month views the digest)
+// ask for the identical range within one render pass — serve one query.
+const rangeCache = new Map<string, { at: number; promise: Promise<DailyHourlyMatrix> }>();
+const RANGE_TTL_MS = 15000;
+
+function getDailyHourlyActivityBetweenCached(startDay: Date, endDay: Date) {
+  const key = `${startDay.getTime()}|${endDay.getTime()}`;
+  const hit = rangeCache.get(key);
+  if (hit && Date.now() - hit.at < RANGE_TTL_MS) {
+    return hit.promise;
+  }
+  const promise = getDailyHourlyActivityBetween(startDay, endDay);
+  rangeCache.set(key, { at: Date.now(), promise });
+  promise.catch(() => rangeCache.delete(key));
+  return promise;
 }
 
 async function getDailyHourlyActivityBetween(
@@ -173,7 +218,7 @@ export async function getDailyHourlyActivity(
   const endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
   const startDay = new Date(endDay);
   startDay.setDate(startDay.getDate() - (nDays - 1));
-  return getDailyHourlyActivityBetween(startDay, endDay);
+  return getDailyHourlyActivityBetweenCached(startDay, endDay);
 }
 
 async function fetchDailyHourlyActivity(nDays: number, endDate: Date): Promise<DailyHourlyMatrix> {

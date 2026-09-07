@@ -1,6 +1,6 @@
 <template lang="pug">
 div
-  svg.vis-svg(ref="svg", width="100%", :height="height + 4")
+  svg.vis-svg(ref="svg", width="100%", :height="chartHeight")
   div.small.text-muted(v-if="days > 0")
     | Category switches per hour (avg over {{ days }} day{{ days === 1 ? '' : 's' }}) · lower is calmer
   div.small.text-muted(v-else-if="loaded") No window events for this period.
@@ -34,6 +34,13 @@ export default {
       loaded: false,
       days: 0,
     };
+  },
+  computed: {
+    // Module-scope constants aren't reachable from the template; route the
+    // svg height through a computed so it doesn't render as NaN.
+    chartHeight(): number {
+      return height + 4;
+    },
   },
   watch: {
     'activityStore.query_options.timeperiod': function () {

@@ -84,8 +84,19 @@ export default {
 
         // The week shown is the one CONTAINING the selected date, anchored at
         // the configured week start (not "selected date and the six after").
+        // Month/year periods anchor at the LAST week of the range; rolling
+        // ranges ('days', last7d/last30d) pass the window START as
+        // timeperiodStart, so shift to the window END first.
         const ws = this.weekStart === 'Monday' ? 1 : this.weekStart === 'Saturday' ? 6 : 0;
-        const anchor = moment(this.timeperiodStart || undefined);
+        const len = (this.timeperiodLength || [1, 'day']) as [number, string];
+        const unit = String(len[1]);
+        const base = moment(this.timeperiodStart || undefined);
+        const anchor =
+          unit.startsWith('month') || unit.startsWith('year')
+            ? base.clone().endOf(unit.startsWith('year') ? 'year' : 'month')
+            : unit === 'days'
+            ? base.clone().add(Math.max(len[0] - 1, 0), 'days')
+            : base;
         const periodStart = anchor
           .clone()
           .startOf(ws === 1 ? 'isoWeek' : 'week')

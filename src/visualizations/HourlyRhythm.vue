@@ -1,6 +1,6 @@
 <template lang="pug">
 div
-  svg.vis-svg(ref="svg", width="100%", :height="height + 34")
+  svg.vis-svg(ref="svg", width="100%", :height="chartHeight")
   div.small.text-muted(v-if="days > 0")
     | Average per day · {{ days }} calendar day{{ days === 1 ? '' : 's' }} ending {{ endLabel }} (window/AFK-based)
     span(v-if="peak") · peak {{ peak.label }} ({{ peak.avg }})
@@ -46,6 +46,13 @@ export default {
       peak: null as { label: string; avg: string } | null,
     };
   },
+  computed: {
+    // Module-scope constants aren't reachable from the template; route the
+    // svg height through a computed so it doesn't render as NaN.
+    chartHeight(): number {
+      return height + 34;
+    },
+  },
   watch: {
     timeperiodStart() {
       this.load();
@@ -64,16 +71,18 @@ export default {
       try {
         // The util anchors a single 60-day server query and slices windows
         // locally — switching dates costs no extra queries.
-        const end = this.selectedDate();
-        this.endLabel = `${String(end.getMonth() + 1).padStart(2, '0')}/${String(
-          end.getDate()
-        ).padStart(2, '0')}`;
         const period: TimePeriod = {
           start: this.timeperiodStart || new Date().toISOString(),
           length: this.timeperiodLength,
         };
         const { days, matrix } = await getDailyHourlyActivityForTimeperiod(period);
         if (token !== this.loadingToken) return;
+        // Label from the data's actual last day — for rolling windows
+        // ('days') timeperiodStart is the window START, not its end.
+        const lastDay = days.length ? days[days.length - 1] : null;
+        if (lastDay) {
+          this.endLabel = lastDay.slice(5).replace('-', '/');
+        }
         const d = days;
         const m = matrix;
         this.days = d.length;
@@ -92,10 +101,6 @@ export default {
         return;
       }
       if (token === this.loadingToken) this.loaded = true;
-    },
-    selectedDate(): Date {
-      const d = this.timeperiodStart ? new Date(this.timeperiodStart) : new Date();
-      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
     },
     render(avg: number[]) {
       const svgEl = this.$refs.svg as SVGSVGElement;

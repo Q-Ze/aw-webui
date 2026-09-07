@@ -1,6 +1,6 @@
 <template lang="pug">
 div
-  svg.vis-svg(ref="svg", width="100%", :height="height + 4")
+  svg.vis-svg(ref="svg", width="100%", :height="chartHeight")
   div.small.text-muted(v-if="days > 0")
     | {{ caption }}
   div.small.text-muted(v-else-if="loaded") No activity data for this range.
@@ -66,9 +66,18 @@ export default {
     };
   },
   computed: {
+    // Module-scope constants aren't reachable from the template; route the
+    // svg height through a computed so it doesn't render as NaN.
+    chartHeight(): number {
+      return height + 4;
+    },
     isWeekView(): boolean {
-      const unit = this.timeperiodLength[1] as string;
-      return unit.startsWith('day') || unit.startsWith('week');
+      // 'day' (singular, browsed day) → the containing week, one row per day.
+      // 'days' is the last7d/last30d rolling range → weekday-average mode,
+      // same as week/month/year. startsWith('day') wrongly captured 'days'.
+      const len = this.timeperiodLength as [number, string];
+      const unit = String(len?.[1] || 'day');
+      return unit.startsWith('week') || (unit === 'day' && len[0] === 1);
     },
   },
   watch: {
