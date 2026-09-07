@@ -35,7 +35,9 @@ export function buildMultideviceHostParams(
       host_params[host] = { bid_window, bid_afk };
       hosts_with_buckets.push(host);
     } else {
-      console.warn(`Skipping host ${host} in multidevice query: missing window/afk bucket`);
+      // Expected for hosts that only sync other bucket types (e.g. Android)
+      // or have an unknown hostname; debug-level to keep the console clean.
+      console.debug(`Skipping host ${host} in multidevice query: missing window/afk bucket`);
     }
   });
   return { host_params, hosts_with_buckets };
