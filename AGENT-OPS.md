@@ -79,7 +79,10 @@ diff <(curl -s http://127.0.0.1:5600/) ~/aw-webui-dist/index.html  # 应无差�
 ### 日常同步（A 机发布后）
 
 ```sh
-git -C ~/aw-webui-dist pull          # dist 分支单提交强推，pull 即最新
+# dist 分支每次发布都是"单提交强推"（重写历史），普通 pull 会报
+# divergent branches——这是预期行为，用 fetch + reset 对齐：
+git -C ~/aw-webui-dist fetch
+git -C ~/aw-webui-dist reset --hard origin/dist
 git -C ~/aw-webui-dist log -1        # 提交消息含构建时间 + 源码短哈希，用于对账
 # 重启 ActivityWatch → 重跑上面的 diff 验证
 ```
