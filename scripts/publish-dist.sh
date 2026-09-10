@@ -39,6 +39,8 @@ fi
 
 echo "==> syncing build output"
 rsync -a --delete --exclude '.git' "$ROOT/dist/" "$TMP/"
+# Carry the ops manual along so consumer machines get it with their clone.
+cp "$ROOT/AGENT-OPS.md" "$TMP/"
 
 echo "==> committing (single commit, force-pushed)"
 (
@@ -48,7 +50,8 @@ echo "==> committing (single commit, force-pushed)"
     echo "no changes since last publish"
     exit 0
   }
-  git push "$REMOTE" "$BRANCH" --force
+  # detached-HEAD worktree commits don't move refs/heads/$BRANCH; push HEAD directly
+  git push "$REMOTE" HEAD:"$BRANCH" --force
   echo "==> pushed $BRANCH -> $REMOTE"
 )
 
