@@ -138,33 +138,38 @@ export async function getDailyHourlyActivityForTimeperiod(
       count += new Date(start.getFullYear() + i, 1, 29).getMonth() === 1 ? 366 : 365;
     }
   } else throw new Error(`Invalid time period unit: ${unit}`);
-  const end = new Date(start);
-  end.setDate(end.getDate() + count - 1);
+  // Effective range in CALENDAR days. Period starts can carry a startOfDay
+  // offset (e.g. today 04:00), so derive the end from day(start)+count-1
+  // instead of the offset-shifted timestamp; comparing those against
+  // today-midnight previously marked today's day view as "entirely future".
+  const dayOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const effStart = dayOf(start);
+  let effEnd = new Date(effStart);
+  effEnd.setDate(effEnd.getDate() + count - 1);
   // Long ranges used to be fixed 30/60-day windows; querying a full year of
   // window∩afk events overloads the single-threaded server. Rules:
-  //  - never look into the future (year periods span selected→+1y, mostly
-  //    ahead, so their effective end is capped at today);
+  //  - never look past today (today's partial day IS included; hour-level
+  //    clipping caps it at the current moment);
   //  - spans over 60 days clamp to the last 60 days of the effective range;
   //  - year views keep a trailing 60-day window (their start IS the selected
   //    day, so a plain intersection would shrink to a single day).
   const today = startOfTodayLocal();
-  let effStart = new Date(start);
-  let effEnd = new Date(end);
   if (effEnd.getTime() > today.getTime()) {
     effEnd = new Date(today);
   }
   if (unit.startsWith('year')) {
-    effStart = new Date(effEnd);
-    effStart.setDate(effStart.getDate() - (MAX_QUERY_DAYS - 1));
-  } else {
-    if (effStart.getTime() > effEnd.getTime()) {
-      return { days: [], matrix: [] };
-    }
-    const spanDays = Math.round((effEnd.getTime() - effStart.getTime()) / 86400000) + 1;
-    if (spanDays > MAX_QUERY_DAYS) {
-      effStart = new Date(effEnd);
-      effStart.setDate(effStart.getDate() - (MAX_QUERY_DAYS - 1));
-    }
+    const trailingStart = new Date(effEnd);
+    trailingStart.setDate(trailingStart.getDate() - (MAX_QUERY_DAYS - 1));
+    return getDailyHourlyActivityBetweenCached(trailingStart, effEnd);
+  }
+  if (effStart.getTime() > effEnd.getTime()) {
+    return { days: [], matrix: [] };
+  }
+  const spanDays = Math.round((effEnd.getTime() - effStart.getTime()) / 86400000) + 1;
+  if (spanDays > MAX_QUERY_DAYS) {
+    const clampedStart = new Date(effEnd);
+    clampedStart.setDate(clampedStart.getDate() - (MAX_QUERY_DAYS - 1));
+    return getDailyHourlyActivityBetweenCached(clampedStart, effEnd);
   }
   return getDailyHourlyActivityBetweenCached(effStart, effEnd);
 }
