@@ -530,10 +530,11 @@ export const useActivityStore = defineStore('activity', {
 
       // Sanitize client-side (the query returns RAW per-event not-afk, no
       // server-side merge): watchers that die without marking afk (power
-      // loss, crash) leave multi-day marathon events behind. Drop single
-      // events longer than 24h, clip the rest to the queried period, then
-      // fold the period into ONE not-afk event (the chart reads the first
-      // not-afk event per period) capped at the period's own length.
+      // loss, crash) leave multi-day marathon events behind, and the
+      // server-side union_no_overlap does not reliably merge overlapping
+      // events across hosts — overlapping spans then double-count and days
+      // peg at the 24h cap. Compute a true interval UNION per period:
+      // drop single events >24h, clip to the period, merge overlaps, sum.
       const MAX_EVENT_SEC = 24 * 3600;
       const active_history = _.zipObject(
         periods,
@@ -541,20 +542,34 @@ export const useActivityStore = defineStore('activity', {
           const [ps, pe] = periods[i].split('/');
           const ps_ms = new Date(ps).getTime();
           const pe_ms = new Date(pe).getTime();
-          let total = 0;
+          const spans: [number, number][] = [];
           for (const e of _.filter(events, ev => ev.data && ev.data.status == 'not-afk')) {
             if ((e.duration || 0) > MAX_EVENT_SEC) continue;
             const e_start = new Date(e.timestamp).getTime();
             const e_end = e_start + (e.duration || 0) * 1000;
             const s = Math.max(e_start, ps_ms);
             const t = Math.min(e_end, pe_ms);
-            if (t > s) total += (t - s) / 1000;
+            if (t > s) spans.push([s, t]);
           }
+          spans.sort((a, b) => a[0] - b[0]);
+          let union_ms = 0;
+          let cur_s: number | null = null;
+          let cur_t = 0;
+          for (const [s, t] of spans) {
+            if (cur_s === null || s > cur_t) {
+              if (cur_s !== null) union_ms += cur_t - cur_s;
+              cur_s = s;
+              cur_t = t;
+            } else {
+              cur_t = Math.max(cur_t, t);
+            }
+          }
+          if (cur_s !== null) union_ms += cur_t - cur_s;
           const period_sec = (pe_ms - ps_ms) / 1000;
           return [
             {
               timestamp: ps,
-              duration: Math.min(total, period_sec),
+              duration: Math.min(union_ms / 1000, period_sec),
               data: { status: 'not-afk' },
             },
           ];
