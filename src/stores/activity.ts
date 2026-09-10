@@ -491,10 +491,6 @@ export const useActivityStore = defineStore('activity', {
     async query_active_history({ timeperiod, ...query_options }: QueryOptions) {
       const settingsStore = useSettingsStore();
       const bucketsStore = useBucketsStore();
-      // Filter out periods that are already in the history, and that are in the future
-      const periods = timeperiodStrsAroundTimeperiod(timeperiod).filter(tp_str => {
-        return !(tp_str in this.active.history) && new Date(tp_str.split('/')[0]) < new Date();
-      });
       let afk_buckets: string[] = [];
       if (settingsStore.useMultidevice) {
         // get all hostnames that qualify for the multidevice query
@@ -512,14 +508,55 @@ export const useActivityStore = defineStore('activity', {
       } else {
         afk_buckets = [this.buckets.afk[0]];
       }
+
+      // The history cache is keyed by period only; if the underlying bucket
+      // set changed (host switch, multidevice toggled), stale values from the
+      // old bucket set would keep showing. Drop them and refetch.
+      const bucket_sig = JSON.stringify(afk_buckets);
+      if ((this.active as any)._bucket_sig !== bucket_sig) {
+        (this.active as any)._bucket_sig = bucket_sig;
+        this.active.history = {};
+      }
+
+      // Filter out periods that are already in the history, and that are in the future
+      const periods = timeperiodStrsAroundTimeperiod(timeperiod).filter(tp_str => {
+        return !(tp_str in this.active.history) && new Date(tp_str.split('/')[0]) < new Date();
+      });
       const query = queries.activityQuery(afk_buckets);
       const data = await getClient().query(periods, query, {
         name: 'activityQuery',
         verbose: true,
       });
+
+      // Watchers that die without marking afk (power loss, crash) leave
+      // multi-day not-afk marathon events behind; a machine that has been
+      // off for days then contributes impossible day totals. Drop events
+      // longer than 24h and clip the rest to the queried period so each
+      // bar can never exceed its own window.
+      const MAX_EVENT_SEC = 24 * 3600;
       const active_history = _.zipObject(
         periods,
-        _.map(data, pair => _.filter(pair, e => e.data.status == 'not-afk'))
+        _.map(data, (pair, i) => {
+          const [ps, pe] = periods[i].split('/');
+          const ps_ms = new Date(ps).getTime();
+          const pe_ms = new Date(pe).getTime();
+          const clipped = [];
+          for (const e of _.filter(pair, ev => ev.data.status == 'not-afk')) {
+            if ((e.duration || 0) > MAX_EVENT_SEC) continue;
+            const e_start = new Date(e.timestamp).getTime();
+            const e_end = e_start + (e.duration || 0) * 1000;
+            const s = Math.max(e_start, ps_ms);
+            const t = Math.min(e_end, pe_ms);
+            if (t > s) {
+              clipped.push({
+                ...e,
+                timestamp: new Date(s).toISOString(),
+                duration: (t - s) / 1000,
+              });
+            }
+          }
+          return clipped;
+        })
       );
       this.query_active_history_completed({ active_history });
     },
