@@ -92,6 +92,7 @@ git -C ~/aw-webui-dist log -1        # 提交消息含构建时间 + 源码短�
 - **aw-server 起不来**：看日志 `~/Library/Logs/activitywatch/aw-server-rust/`（Windows：`%LOCALAPPDATA%\activitywatch\aw-server-rust\`）。已知坑：`config.toml` 里 `custom_static` 指向不存在的目录会直接 panic。
 - **5600 被占 / aw-qt 崩溃循环**：有孤儿 aw-server 进程，`pkill -f aw-server-rust` 后从 aw-qt 重启。
 - **bucket 名带 `-synced-from-xxx` 后缀**：这是多设备同步的**正常形态**，不是脏数据，不要删。
+- **柱状图出现 >24h/顶格/归零的日柱（2026-09 案例）**：源头机器频繁重启（调试期反复 pkill aw-qt）导致同步向对端桶写入**多份互相重叠的事件变体**（单条不长，叠加后日总量 100h+）。webui 已在 activityQuery 客户端做区间并集免疫（源码 83a0a96 起）。诊断用 SQLite 只读：`sqlite3 "file:sqlite.db?mode=ro"`，events 表 starttime/endtime 为纳秒，对比 `SUM(endtime-starttime)` 与区间并集即可确认。清理：`curl -X DELETE http://127.0.0.1:5600/api/0/buckets/<同步桶id>` 后让其重同步。避免在同步进行中重启 ActivityWatch。
 - **回滚**：`git -C ~/aw-webui-dist checkout <旧提交>` 后重启 ActivityWatch。
 
 ---
