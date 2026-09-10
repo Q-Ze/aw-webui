@@ -485,7 +485,10 @@ export function activityQuery(afkbuckets: string[]): string[] {
       `not_afk = union_no_overlap(not_afk, not_afk_curr);`,
     ]);
   }
-  q = q.concat(['not_afk = merge_events_by_keys(not_afk, ["status"]);', 'RETURN = not_afk;']);
+  // NOTE: no merge_events_by_keys here — merging on the server folds the
+  // whole period into ONE event whose duration is the day total, which makes
+  // per-event sanitation (dead-watcher marathon dropping) impossible.
+  q = q.concat(['RETURN = not_afk;']);
   return q;
 }
 

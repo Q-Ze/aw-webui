@@ -528,34 +528,36 @@ export const useActivityStore = defineStore('activity', {
         verbose: true,
       });
 
-      // Watchers that die without marking afk (power loss, crash) leave
-      // multi-day not-afk marathon events behind; a machine that has been
-      // off for days then contributes impossible day totals. Drop events
-      // longer than 24h and clip the rest to the queried period so each
-      // bar can never exceed its own window.
+      // Sanitize client-side (the query returns RAW per-event not-afk, no
+      // server-side merge): watchers that die without marking afk (power
+      // loss, crash) leave multi-day marathon events behind. Drop single
+      // events longer than 24h, clip the rest to the queried period, then
+      // fold the period into ONE not-afk event (the chart reads the first
+      // not-afk event per period) capped at the period's own length.
       const MAX_EVENT_SEC = 24 * 3600;
       const active_history = _.zipObject(
         periods,
-        _.map(data, (pair, i) => {
+        _.map(data, (events, i) => {
           const [ps, pe] = periods[i].split('/');
           const ps_ms = new Date(ps).getTime();
           const pe_ms = new Date(pe).getTime();
-          const clipped = [];
-          for (const e of _.filter(pair, ev => ev.data.status == 'not-afk')) {
+          let total = 0;
+          for (const e of _.filter(events, ev => ev.data && ev.data.status == 'not-afk')) {
             if ((e.duration || 0) > MAX_EVENT_SEC) continue;
             const e_start = new Date(e.timestamp).getTime();
             const e_end = e_start + (e.duration || 0) * 1000;
             const s = Math.max(e_start, ps_ms);
             const t = Math.min(e_end, pe_ms);
-            if (t > s) {
-              clipped.push({
-                ...e,
-                timestamp: new Date(s).toISOString(),
-                duration: (t - s) / 1000,
-              });
-            }
+            if (t > s) total += (t - s) / 1000;
           }
-          return clipped;
+          const period_sec = (pe_ms - ps_ms) / 1000;
+          return [
+            {
+              timestamp: ps,
+              duration: Math.min(total, period_sec),
+              data: { status: 'not-afk' },
+            },
+          ];
         })
       );
       this.query_active_history_completed({ active_history });
