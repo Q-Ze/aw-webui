@@ -120,7 +120,11 @@ export default {
         // from escaped bucket ids/hostnames in formatTimelineBucketLabelHtml.
         groupTemplate: (group: any, _element: HTMLElement) => {
           const container = document.createElement('span');
-          container.innerHTML = group.content || '';
+          // vis-timeline can invoke the template with a null group during
+          // teardown/destroy — guard or route switches throw reading .content.
+          if (group && group.content) {
+            container.innerHTML = group.content;
+          }
           return container;
         },
         tooltip: {
@@ -240,8 +244,14 @@ export default {
       this.updateFrame = null;
     }
     if (this.timeline) {
-      if (this.selectHandler) this.timeline.off('select', this.selectHandler);
-      this.timeline.destroy();
+      try {
+        this.timeline.destroy();
+        if (this.selectHandler) this.timeline.off('select', this.selectHandler);
+      } catch (e) {
+        // vis-timeline teardown can throw from internal re-render paths;
+        // the instance is being discarded either way.
+        console.warn('vis-timeline destroy threw during unmount:', e);
+      }
       this.timeline = null;
     }
   },
