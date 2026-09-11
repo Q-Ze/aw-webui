@@ -250,11 +250,27 @@ export async function buildDigestData(
   const perWeekLines: string[] = []; // month: week -> what
 
   if (n === 1 && events.length > 0) {
+    // Slice events into clock hours (AGENT-OPS rule #3: use hourclip, never
+    // attribute a whole multi-hour event to its starting hour — that's how
+    // single buckets ended up showing >60min).
     const byHour: Record<number, Agg> = {};
     for (const e of events) {
-      const h = moment(e.timestamp).hour();
-      byHour[h] = byHour[h] || newAgg();
-      addEvent(byHour[h], e);
+      clipEventToHours(e.timestamp, e.duration || 0, slice => {
+        byHour[slice.hour] = byHour[slice.hour] || newAgg();
+        const o = byHour[slice.hour];
+        const d = slice.seconds;
+        o.min += d / 60;
+        const cat = e.data && e.data['$category'];
+        if (cat) {
+          const k = cat.join(' > ');
+          o.cat[k] = (o.cat[k] || 0) + d;
+        }
+        if (e.data && e.data.app) o.app[e.data.app] = (o.app[e.data.app] || 0) + d;
+        if (e.data && e.data.title) {
+          const t = cleanT(e.data.title);
+          if (t) o.title[t] = (o.title[t] || 0) + d;
+        }
+      });
     }
     for (const h of Object.keys(byHour)
       .map(Number)
