@@ -274,12 +274,34 @@ async function fetchDailyHourlyActivity(nDays: number, endDate: Date): Promise<D
     const result = data && data[i];
     const events =
       ((result && (result.events || (result[0] && result[0].events))) as IEvent[]) || [];
-    const hours = new Array(24).fill(0);
+    // union_no_overlap across hosts leaves overlapping spans behind (seen in
+    // the wild with synced-bucket duplicate variants), which double-counts
+    // hours past 60min. Compute per-hour INTERVAL UNION coverage instead of
+    // summing per-event slices.
+    const spansByHour: [number, number][][] = Array.from({ length: 24 }, () => []);
     for (const e of events) {
       clipEventToHours(e.timestamp, e.duration || 0, slice => {
-        hours[slice.hour] += slice.seconds / 60;
+        const t = new Date(slice.date).getTime();
+        spansByHour[slice.hour].push([t, t + slice.seconds * 1000]);
       });
     }
+    const hours = spansByHour.map(spans => {
+      spans.sort((a, b) => a[0] - b[0]);
+      let coveredMs = 0;
+      let curS: number | null = null;
+      let curT = 0;
+      for (const [s, t] of spans) {
+        if (curS === null || s > curT) {
+          if (curS !== null) coveredMs += curT - curS;
+          curS = s;
+          curT = t;
+        } else {
+          curT = Math.max(curT, t);
+        }
+      }
+      if (curS !== null) coveredMs += curT - curS;
+      return coveredMs / 60000;
+    });
     // Keep zero-activity calendar days so slicing by date remains correct.
     days.push(dayKeys[i]);
     matrix.push(hours);

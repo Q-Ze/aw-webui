@@ -108,6 +108,35 @@ function storeDigest(granularity: DigestGranularity, anchor: moment.Moment, text
   localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
 }
 
+/** Greedy span dedup: drops events fully covered by an earlier event and
+ *  clips partial overlaps, so every moment is attributed exactly once.
+ *  Needed because union_no_overlap in the canonical query does not reliably
+ *  merge overlapping variants (e.g. synced-bucket duplicates). */
+function dedupeOverlapping(events: any[]): any[] {
+  const sorted = [...events].sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  );
+  const out: any[] = [];
+  let coveredUntil = Number.NEGATIVE_INFINITY;
+  for (const e of sorted) {
+    const s = new Date(e.timestamp).getTime();
+    const end = s + (e.duration || 0) * 1000;
+    if (end <= coveredUntil) continue;
+    const start = Math.max(s, coveredUntil);
+    out.push(
+      start === s
+        ? e
+        : {
+            ...e,
+            timestamp: new Date(start).toISOString(),
+            duration: (end - start) / 1000,
+          }
+    );
+    coveredUntil = end;
+  }
+  return out;
+}
+
 function fmtHourMinutes(hours: number[]): string {
   // Compact "HH:MM" run-length summary of the active part of the day.
   const active = hours.map((m, h) => ({ h, m })).filter(x => x.m >= 1);
@@ -157,8 +186,10 @@ export async function buildDigestData(
 
   // One query covers both the current and the previous range; split locally.
   const eventsAll = n <= 30 ? await fetchCategorizedWindowEvents(prevStart, end) : [];
-  const events = eventsAll.filter(e => moment(e.timestamp).isSameOrAfter(start));
-  const prevEvents = eventsAll.filter(e => moment(e.timestamp).isBefore(start));
+  // union_no_overlap across hosts leaves overlapping synced-bucket variants
+  // behind; dedupe spans first or hours can exceed 60min and totals inflate.
+  const events = dedupeOverlapping(eventsAll.filter(e => moment(e.timestamp).isSameOrAfter(start)));
+  const prevEvents = dedupeOverlapping(eventsAll.filter(e => moment(e.timestamp).isBefore(start)));
 
   const activeMin = Math.round(_.sumBy(events, 'duration') / 60);
   const prevActiveMin = Math.round(_.sumBy(prevEvents, 'duration') / 60);
