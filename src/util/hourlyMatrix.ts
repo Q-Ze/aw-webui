@@ -266,7 +266,27 @@ async function fetchDailyHourlyActivity(nDays: number, endDate: Date): Promise<D
     dayKeys.push(keyOf(s));
   }
 
-  const data = await getClient().query(periods, q, { name: 'hourlyActivityQuery' });
+  // Query in ≤30-day chunks with one retry each. On page load every chart
+  // and the store fire at once; the single-threaded server queues them, and
+  // one long 60-period request used to burn its whole axios timeout just
+  // WAITING in the queue — charts then gave up permanently. Shorter chunks
+  // plus a retry absorb the queue drain.
+  const CHUNK = 30;
+  const data: any[] = [];
+  for (let c = 0; c < periods.length; c += CHUNK) {
+    const chunk = periods.slice(c, c + CHUNK);
+    let res: any = null;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await getClient().query(chunk, q, { name: 'hourlyActivityQuery' });
+        break;
+      } catch (e) {
+        if (attempt >= 1) throw e;
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+    data.push(...res);
+  }
 
   const matrix: number[][] = [];
   const days: string[] = [];

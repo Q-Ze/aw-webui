@@ -101,6 +101,15 @@ export default {
         return;
       }
       if (token === this.loadingToken) this.loaded = true;
+      // On mount, every chart fires at once and the single-threaded server
+      // queues them; a request can time out just waiting. One silent retry
+      // after the queue drains instead of showing "no data" forever.
+      if (token === this.loadingToken && this.days === 0 && !this._retried) {
+        this._retried = true;
+        setTimeout(() => {
+          if (this.loadingToken === token) this.load();
+        }, 4000);
+      }
     },
     render(avg: number[]) {
       const svgEl = this.$refs.svg as SVGSVGElement;

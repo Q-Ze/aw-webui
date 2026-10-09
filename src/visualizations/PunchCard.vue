@@ -158,6 +158,16 @@ export default {
         console.error('aw-punchcard failed:', e);
       }
       if (token === this.loadToken) this.loaded = true;
+      // One silent retry: on mount every chart fires at once and the
+      // single-threaded server queues them; a request can time out just
+      // waiting in the queue. Retry after it drains instead of showing
+      // "no data" forever.
+      if (token === this.loadToken && this.days === 0 && !this._retried) {
+        this._retried = true;
+        setTimeout(() => {
+          if (this.loadToken === token) this.load();
+        }, 4500);
+      }
     },
     render(rows: Row[]) {
       const svgEl = this.$refs.svg as SVGSVGElement;
