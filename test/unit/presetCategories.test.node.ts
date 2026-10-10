@@ -148,6 +148,42 @@ describe('parsePresetCategorySets', () => {
     expect(sets[0].categories[2].rule.select_keys).toEqual(['title', 'app']);
   });
 
+  test('preserves integer priority and the weight alias on regex rules', () => {
+    const sets = parsePresetCategorySets([
+      {
+        id: 'set',
+        categories: [
+          {
+            name: ['Priority'],
+            rule: { type: 'regex', regex: 'x', priority: 25 },
+          },
+          {
+            name: ['Weight'],
+            rule: { type: 'regex', regex: 'y', weight: -5 },
+          },
+        ],
+      },
+    ]);
+    expect(sets[0].categories[0].rule.priority).toBe(25);
+    expect(sets[0].categories[1].rule.priority).toBe(-5);
+    expect(sets[0].categories[1].rule.weight).toBeUndefined();
+  });
+
+  test('drops preset categories with non-integer priority values', () => {
+    const sets = parsePresetCategorySets([
+      {
+        id: 'set',
+        categories: [
+          {
+            name: ['Bad'],
+            rule: { type: 'regex', regex: 'x', priority: 1.5 },
+          },
+        ],
+      },
+    ]);
+    expect(sets).toEqual([]);
+  });
+
   test('keeps the first of duplicate set ids', () => {
     const sets = parsePresetCategorySets([
       presetSet,
@@ -222,6 +258,34 @@ describe('mergeCategorySets', () => {
     expect(merged).toHaveLength(2);
   });
 
+  test('only the primary masks inherited names, without masking its own categories', () => {
+    const primary = {
+      ...setA,
+      tombstones: [JSON.stringify(['Shared']), JSON.stringify(['OnlyB'])],
+    };
+    const secondary = { ...setB, tombstones: [JSON.stringify(['OnlyA'])] };
+    expect(mergeCategorySets([primary, secondary]).map(c => c.name[0])).toEqual([
+      'Shared',
+      'OnlyA',
+    ]);
+    // Masks are contextual: the untouched source can still be used alone.
+    expect(mergeCategorySets([secondary]).map(c => c.name[0])).toEqual(['Shared', 'OnlyB']);
+  });
+
+  test('tombstones distinguish a literal separator from nested category paths', () => {
+    const sets: CategorySet[] = [
+      { id: 'mine', categories: [], tombstones: [JSON.stringify(['Work', 'Email'])] },
+      {
+        id: 'shared',
+        categories: [
+          { name: ['Work', 'Email'], rule: { type: 'none' } },
+          { name: ['Work>Email'], rule: { type: 'none' } },
+        ],
+      },
+    ];
+    expect(mergeCategorySets(sets).map(c => c.name)).toEqual([['Work>Email']]);
+  });
+
   test('empty input yields no categories', () => {
     expect(mergeCategorySets([])).toEqual([]);
   });
@@ -291,6 +355,22 @@ describe('loadCategories with presets', () => {
     expect(sets[0].categories).toEqual(defaultCategories);
   });
 
+  test('a saved empty class list is kept instead of being replaced by the preset', () => {
+    setPresetGlobal([presetSet]);
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      classes: [],
+      category_sets: [],
+      active_set_ids: ['default'],
+      _storedKeys: ['classes'],
+    });
+
+    const { sets, activeIds } = loadCategories();
+    expect(activeIds).toEqual(['default']);
+    expect(sets.find(s => s.id === 'default').categories).toEqual([]);
+    expect(sets.map(s => s.id)).toContain('study');
+  });
+
   test('a user with stored classes keeps them; presets are available but inactive', () => {
     setPresetGlobal([presetSet]);
     const myClasses: Category[] = [{ name: ['Mine'], rule: { type: 'regex', regex: 'mine' } }];
@@ -302,6 +382,217 @@ describe('loadCategories with presets', () => {
     expect(sets.find(s => s.id === 'default').categories).toEqual(myClasses);
     // still selectable by the user
     expect(sets.map(s => s.id)).toContain('study');
+  });
+
+  test('first-run settings.save of stock defaults does not let default beat the preset', () => {
+    // ActivityWatch/activitywatch#1439: any settings.save() persists every key,
+    // including classes=defaultCategories and active_set_ids=['default']. That
+    // used to trip hasStoredCategories and wrap a competing `default` set.
+    setPresetGlobal([presetSet]);
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      classes: defaultCategories,
+      category_sets: [],
+      active_set_ids: ['default'],
+      _storedKeys: ['classes', 'category_sets', 'active_set_ids'],
+    });
+
+    const { sets, activeIds } = loadCategories();
+    expect(activeIds).toEqual(['study']);
+    expect(sets.map(s => s.id)).toEqual(['study']);
+  });
+
+  test('a recolored default category is kept as a custom taxonomy', () => {
+    setPresetGlobal([presetSet]);
+    const edited = defaultCategories.map(c =>
+      c.name[0] === 'Work' && c.name.length === 1
+        ? { ...c, data: { ...c.data, color: '#123456' } }
+        : c
+    );
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      classes: edited,
+      _storedKeys: ['classes'],
+    });
+
+    const { sets, activeIds } = loadCategories();
+    expect(activeIds).toEqual(['default']);
+    expect(sets.find(s => s.id === 'default').categories).toEqual(edited);
+  });
+
+  test('a colorless copy of a colored preset is still an install default', () => {
+    const coloredPreset: CategorySet = {
+      id: 'study',
+      categories: presetSet.categories.map(c => ({
+        ...c,
+        data: { color: '#ABCDEF' },
+      })),
+    };
+    setPresetGlobal([coloredPreset]);
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      classes: presetSet.categories, // no data.color
+      _storedKeys: ['classes'],
+    });
+
+    const { sets, activeIds } = loadCategories();
+    expect(activeIds).toEqual(['study']);
+    expect(sets.map(s => s.id)).toEqual(['study']);
+  });
+
+  test('editing the Uncategorized rule is kept as a custom taxonomy', () => {
+    setPresetGlobal([presetSet]);
+    const edited = defaultCategories.map(c =>
+      c.name[0] === 'Uncategorized'
+        ? { ...c, rule: { type: 'regex' as const, regex: 'SomeApp' } }
+        : c
+    );
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      classes: edited,
+      _storedKeys: ['classes'],
+    });
+
+    const { sets, activeIds } = loadCategories();
+    expect(activeIds).toEqual(['default']);
+    expect(sets.find(s => s.id === 'default').categories).toEqual(edited);
+  });
+
+  test('edited default rules are kept even when category names still match', () => {
+    // A user who only changed a regex must not be classified as unconfigured
+    // and have that edit replaced by the shipped preset.
+    setPresetGlobal([presetSet]);
+    const edited = defaultCategories.map(c =>
+      c.name[0] === 'Work' && c.name.length === 1
+        ? { ...c, rule: { ...c.rule, regex: c.rule.regex + '|Overleaf' } }
+        : c
+    );
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      classes: edited,
+      category_sets: [],
+      active_set_ids: ['default'],
+      _storedKeys: ['classes', 'category_sets', 'active_set_ids'],
+    });
+
+    const { sets, activeIds } = loadCategories();
+    expect(activeIds).toEqual(['default']);
+    expect(sets.find(s => s.id === 'default').categories).toEqual(edited);
+    expect(sets.map(s => s.id)).toContain('study');
+  });
+
+  test('a score-only edit is kept as a custom taxonomy (greptile P1)', () => {
+    // Users can persist a category's productivity score (data.score).
+    // A taxonomy that differs from the install default only by score must be
+    // treated as customized — not classified as unconfigured and replaced by
+    // the shipped preset.
+    setPresetGlobal([presetSet]);
+    const edited = defaultCategories.map(c =>
+      c.name[0] === 'Work' && c.name.length === 1
+        ? { ...c, data: { ...(c.data ?? {}), score: 0.9 } }
+        : c
+    );
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      classes: edited,
+      category_sets: [],
+      active_set_ids: ['default'],
+      _storedKeys: ['classes', 'category_sets', 'active_set_ids'],
+    });
+
+    const { sets, activeIds } = loadCategories();
+    expect(activeIds).toEqual(['default']);
+    expect(sets.find(s => s.id === 'default').categories).toEqual(edited);
+    expect(sets.map(s => s.id)).toContain('study');
+  });
+
+  test('a cleared score (inherit parent) does not block preset activation (greptile P1 trade-off)', () => {
+    // "Inherit parent score" stores an undefined score, which is indistinguishable
+    // from a legacy entry persisted before scores existed.  We cannot tell
+    // them apart in storage, so we treat both as install-default (not a user edit).
+    // The preset activates; the cleared-score intent is acceptable collateral.
+    setPresetGlobal([presetSet]);
+    const edited = defaultCategories.map(c =>
+      c.name[0] === 'Work' && c.name.length === 1
+        ? { ...c, data: { ...(c.data ?? {}), score: undefined } }
+        : c
+    );
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      classes: edited,
+      category_sets: [],
+      active_set_ids: ['default'],
+      _storedKeys: ['classes', 'category_sets', 'active_set_ids'],
+    });
+
+    const { sets, activeIds } = loadCategories();
+    // Cleared score ≡ legacy absent score → treated as install default → preset activates.
+    expect(activeIds).toContain('study');
+    expect(sets.map(s => s.id)).toContain('study');
+  });
+
+  test('a legacy taxonomy without scores does not suppress preset activation (greptile P1)', () => {
+    // Categories persisted before scores were introduced have no score field.
+    // The comparison must not treat their absent score as a user customization;
+    // otherwise the preset is never activated for upgrading users.
+    setPresetGlobal([presetSet]);
+    // Strip the score field from all categories, simulating legacy persisted data.
+    const legacy = defaultCategories.map(c => {
+      const d = { ...(c.data ?? {}) };
+      delete d.score;
+      return { ...c, data: d };
+    });
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      classes: legacy,
+      category_sets: [],
+      active_set_ids: ['default'],
+      _storedKeys: ['classes', 'category_sets', 'active_set_ids'],
+    });
+
+    const { sets, activeIds } = loadCategories();
+    // Legacy data (no stored score) must be treated as install default → preset activates.
+    expect(activeIds).toContain('study');
+    expect(sets.map(s => s.id)).toContain('study');
+  });
+
+  test('a taxonomy with duplicate stored names is kept as a custom taxonomy (greptile P1)', () => {
+    // A legacy taxonomy with a duplicate category name must not be misclassified
+    // as an install default: duplicate stored names break the one-to-one name
+    // match requirement and indicate user edits.
+    setPresetGlobal([presetSet]);
+    // Duplicate the first default category name in the stored list.
+    const withDuplicate = [defaultCategories[0], ...defaultCategories];
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      classes: withDuplicate,
+      category_sets: [],
+      active_set_ids: ['default'],
+      _storedKeys: ['classes', 'category_sets', 'active_set_ids'],
+    });
+
+    const { sets, activeIds } = loadCategories();
+    // The taxonomy has a duplicate name → it is not an install default → keep it.
+    expect(activeIds).toEqual(['default']);
+    expect(sets.find(s => s.id === 'default')).toBeTruthy();
+  });
+
+  test('first-run settings.save of the preset classes still activates the preset set', () => {
+    // settings.classes defaults to getDefaultClasses(), which *is* the preset
+    // on a research build. Persisting that copy must not create a `default`
+    // set that wins over `research-study`.
+    setPresetGlobal([presetSet]);
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      classes: presetSet.categories,
+      category_sets: [],
+      active_set_ids: ['default'],
+      _storedKeys: ['classes', 'category_sets', 'active_set_ids'],
+    });
+
+    const { sets, activeIds } = loadCategories();
+    expect(activeIds).toEqual(['study']);
+    expect(sets.map(s => s.id)).toEqual(['study']);
   });
 
   test('stored sets take precedence over a preset with the same id', () => {
@@ -471,5 +762,78 @@ describe('categories store with presets', () => {
     categoryStore.restoreDefaultClasses();
     expect(categoryStore.get_category(['Work'])).toBeTruthy();
     expect(categoryStore.classes.length).toBeGreaterThan(defaultCategories.length - 1);
+  });
+});
+
+describe('default palette change (#1058)', () => {
+  // The colors the stock categories had before the palette was softened.
+  const OLD_COLORS: Record<string, string> = {
+    Work: '#0F0',
+    Media: '#F33',
+    'Media>Games': '#F80',
+    'Media>Video': '#F33',
+    'Media>Social Media': '#FCC400',
+    'Media>Music': '#A8FC00',
+    Comms: '#9FF',
+  };
+  const withOldColors = (overrides: Record<string, string> = {}): Category[] =>
+    defaultCategories.map(c => {
+      const key = c.name.join('>');
+      const color = overrides[key] ?? OLD_COLORS[key];
+      return color ? { ...c, data: { ...c.data, color } } : c;
+    });
+  const colorOf = (cats: Category[], key: string) =>
+    cats.find(c => c.name.join('>') === key).data?.color;
+
+  test('the old stock defaults persisted by first-run save still let the preset win', () => {
+    setPresetGlobal([presetSet]);
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      classes: withOldColors(),
+      category_sets: [],
+      active_set_ids: ['default'],
+      _storedKeys: ['classes', 'category_sets', 'active_set_ids'],
+    });
+
+    const { activeIds } = loadCategories();
+    expect(activeIds).toEqual(['study']);
+  });
+
+  test('stored old default colors are shown in the new palette', () => {
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({ classes: withOldColors(), _storedKeys: ['classes'] });
+
+    const { sets } = loadCategories();
+    const cats = sets.find(s => s.id === 'default').categories;
+    for (const key of Object.keys(OLD_COLORS)) {
+      expect(colorOf(cats, key)).toBe(colorOf(defaultCategories, key));
+    }
+  });
+
+  test('category names that are Object.prototype keys load normally', () => {
+    const settingsStore = useSettingsStore();
+    const mine: Category[] = ['constructor', 'toString', '__proto__'].map(name => ({
+      name: [name],
+      rule: { type: 'regex', regex: name },
+      data: { color: '#123456' },
+    }));
+    settingsStore.$patch({ classes: mine, _storedKeys: ['classes'] });
+
+    const { sets } = loadCategories();
+    expect(sets.find(s => s.id === 'default').categories).toEqual(mine);
+  });
+
+  test('a color the user picked is kept while untouched ones move to the new palette', () => {
+    const settingsStore = useSettingsStore();
+    settingsStore.$patch({
+      category_sets: [{ id: 'default', categories: withOldColors({ Media: '#123456' }) }],
+      active_set_ids: ['default'],
+      _storedKeys: ['category_sets', 'active_set_ids'],
+    });
+
+    const { sets } = loadCategories();
+    const cats = sets.find(s => s.id === 'default').categories;
+    expect(colorOf(cats, 'Media')).toBe('#123456');
+    expect(colorOf(cats, 'Work')).toBe(colorOf(defaultCategories, 'Work'));
   });
 });

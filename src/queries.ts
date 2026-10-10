@@ -77,6 +77,13 @@ export interface AndroidQueryParams extends BaseQueryParams {
    *  Keep false (the default) for regular Android watcher buckets so that
    *  merge_events_by_keys does not drop every event due to a missing key. */
   isIos?: boolean;
+  /** Keep the raw (flooded) app events instead of pre-merging them by app.
+   *  Required whenever the events are combined with other timelines, as in
+   *  the multidevice query: merge_events_by_keys collapses every app into a
+   *  single event at its first timestamp (with the summed duration) and
+   *  returns them in arbitrary order, which union_no_overlap (it expects
+   *  sorted, positioned events) then clips against the other devices. */
+  keep_event_timestamps?: boolean;
 }
 
 export interface MultiQueryParams extends BaseQueryParams {
@@ -89,21 +96,42 @@ export interface MultiQueryParams extends BaseQueryParams {
   host_params: { [host: string]: Partial<DesktopQueryParams> | Partial<AndroidQueryParams> };
 }
 
-function get_params(
-  params: MultiQueryParams,
-  host: string
-): DesktopQueryParams | AndroidQueryParams {
+// Query-variable suffix for the i-th host of a multidevice query. The index
+// keeps it unique: different hostnames can map to the same safeHostname()
+// (e.g. "work-laptop" and "worklaptop"), and would otherwise overwrite each
+// other's events.
+function hostVariableSuffix(params: MultiQueryParams, i: number): string {
+  return `${safeHostname(params.hosts[i])}_${i}`;
+}
+
+function get_params(params: MultiQueryParams, i: number): DesktopQueryParams | AndroidQueryParams {
+  const host = params.hosts[i];
   // Return the params for a given host, based on the self params and any overrides in host_params.
-  // If no overrides are found, return the base params.
+  // If no overrides are found, return the base (desktop) params.
+  const host_params = params.host_params[host];
+
+  // A host with only an android/ScreenTime bucket (no afkstatus bucket, e.g.
+  // a phone synced via aw-sync) queries via the android path instead, which
+  // has no afk filter — see buildMultideviceHostParams.
+  if (host_params && isAndroidParams(host_params) && host_params.bid_android) {
+    const new_params: AndroidQueryParams = {
+      ...params,
+      bid_android: host_params.bid_android,
+      isIos: host_params.isIos,
+      keep_event_timestamps: true,
+      return_variable_suffix: hostVariableSuffix(params, i),
+    };
+    return new_params;
+  }
+
   const new_params: DesktopQueryParams = {
     ...params,
     bid_window: 'aw-watcher-window_' + host,
     bid_afk: 'aw-watcher-afk_' + host,
     bid_browsers: [],
-    return_variable_suffix: safeHostname(host),
+    return_variable_suffix: hostVariableSuffix(params, i),
   };
 
-  const host_params = params.host_params[host];
   if (host_params) {
     if (!isDesktopParams(host_params)) {
       console.error(`Invalid host_params for host ${host}: ${JSON.stringify(host_params)}`);
@@ -172,22 +200,34 @@ export function canonicalEvents(params: DesktopQueryParams | AndroidQueryParams)
     // "title" here collapses all Android watcher events to zero duration
     // (regression introduced in bf0fc84 to support iOS ScreenTime, which DOES
     // carry "title").  Only add "title" when the bucket is an iOS ScreenTime import.
-    isAndroidParams(params)
+    // Skipped when the events are combined with other devices' timelines
+    // (see AndroidQueryParams.keep_event_timestamps).
+    isAndroidParams(params) && !params.keep_event_timestamps
       ? params.isIos
         ? 'events = merge_events_by_keys(events, ["app", "title"]);'
         : 'events = merge_events_by_keys(events, ["app"]);'
       : '',
-    // Fetch not-afk events
+    // Fetch not-afk events. When there is no AFK bucket (bid_afk is empty),
+    // emit an empty not_afk list so later references to the variable
+    // (including `return_variable_suffix`, used by the multidevice query)
+    // don't fail. Android/ScreenTime buckets have no afkstatus concept at
+    // all (matching the single-device Android view, which treats all app
+    // events as active — see appQuery's "active_events": app_events), so
+    // their app/window events themselves count as not-afk instead of an
+    // empty list, otherwise mobile hosts would contribute zero events to
+    // the multidevice active timeline despite having counted duration.
     isDesktopParams(params)
-      ? `not_afk = flood(${queryBucket(params.bid_afk)});
-         not_afk = filter_keyvals(not_afk, "status", ["not-afk"]);` +
-        (always_active_pattern_str
-          ? `not_treat_as_afk = filter_keyvals_regex(events, "app", "${always_active_pattern_str}");
-             not_afk = period_union(not_afk, not_treat_as_afk);
-             not_treat_as_afk = filter_keyvals_regex(events, "title", "${always_active_pattern_str}");
-             not_afk = period_union(not_afk, not_treat_as_afk);`
-          : '')
-      : '',
+      ? params.bid_afk
+        ? `not_afk = flood(${queryBucket(params.bid_afk)});
+           not_afk = filter_keyvals(not_afk, "status", ["not-afk"]);` +
+          (always_active_pattern_str
+            ? `not_treat_as_afk = filter_keyvals_regex(events, "app", "${always_active_pattern_str}");
+               not_afk = period_union(not_afk, not_treat_as_afk);
+               not_treat_as_afk = filter_keyvals_regex(events, "title", "${always_active_pattern_str}");
+               not_afk = period_union(not_afk, not_treat_as_afk);`
+            : '')
+        : 'not_afk = [];'
+      : 'not_afk = events;',
     // Fetch browser events
     isDesktopParams(params) && params.bid_browsers
       ? browserEvents(params) +
@@ -207,8 +247,9 @@ export function canonicalEvents(params: DesktopQueryParams | AndroidQueryParams)
       : 'stopwatch_events = [];',
     // Categorize
     params.categories ? `events = categorize(events, ${categories_str});` : '',
-    // Filter out selected categories
-    params.filter_categories
+    // Filter out selected categories. Only emit when the list is non-empty: an
+    // empty allow-list would drop every event rather than skip the filter.
+    params.filter_categories && params.filter_categories.length > 0
       ? `events = filter_keyvals(events, "$category", ${cat_filter_str});`
       : '',
     // "Return" events by setting variable named with return_variable if set
@@ -221,8 +262,8 @@ export function canonicalEvents(params: DesktopQueryParams | AndroidQueryParams)
 
 export function canonicalMultideviceEvents(params: MultiQueryParams): string {
   // First, query each device individually
-  const queries: string[] = _.map(params.hosts, hostname => {
-    return canonicalEvents(get_params(params, hostname));
+  const queries: string[] = _.map(params.hosts, (_hostname, i) => {
+    return canonicalEvents(get_params(params, i));
   });
 
   // Now we need to combine the queries to get a single series of events.
@@ -233,8 +274,8 @@ export function canonicalMultideviceEvents(params: MultiQueryParams): string {
   query += 'not_afk = [];';
   for (let i = 0; i < queries.length; i++) {
     query += `
-    events = union_no_overlap(events, events_${safeHostname(params.hosts[i])});
-    not_afk = union_no_overlap(not_afk, not_afk_${safeHostname(params.hosts[i])});
+    events = union_no_overlap(events, events_${hostVariableSuffix(params, i)});
+    not_afk = union_no_overlap(not_afk, not_afk_${hostVariableSuffix(params, i)});
     `;
   }
 
@@ -247,7 +288,8 @@ export function appQuery(
   appbucket: string,
   categories: Category[],
   filter_categories: string[][],
-  isIos = false
+  isIos = false,
+  limit = default_limit
 ): string[] {
   appbucket = escape_doublequote(appbucket);
   const params: AndroidQueryParams = {
@@ -259,7 +301,9 @@ export function appQuery(
 
   // aw-watcher-android events have no "title" key; only ScreenTime (iOS) does.
   // Merging on "title" when it is absent drops every event (see canonicalEvents).
-  const titleMergeKeys = isIos ? '["app", "classname", "title"]' : '["app", "classname"]';
+  // ScreenTime (iOS) events carry "app" and "title" but NOT "classname";
+  // merging on "classname" when absent drops every event.
+  const titleMergeKeys = isIos ? '["app", "title"]' : '["app", "classname"]';
 
   const code = `
     ${canonicalEvents(params)}
@@ -267,12 +311,13 @@ export function appQuery(
     title_events = sort_by_duration(merge_events_by_keys(events, ${titleMergeKeys}));
     app_events   = sort_by_duration(merge_events_by_keys(title_events, ["app"]));
     cat_events   = sort_by_duration(merge_events_by_keys(events, ["$category"]));
+    app_cat_events = sort_by_duration(merge_events_by_keys(events, ["app", "$category"]));
 
     events = sort_by_timestamp(events);
-    app_events  = limit_events(app_events, ${default_limit});
-    title_events  = limit_events(title_events, ${default_limit});
+    app_events  = limit_events(app_events, ${limit});
+    title_events  = limit_events(title_events, ${limit});
     duration = sum_durations(events);
-    RETURN  = {"app_events": app_events, "title_events": title_events, "cat_events": cat_events, "duration": duration, "active_events": app_events};
+    RETURN  = {"app_events": app_events, "app_cat_events": app_cat_events, "title_events": title_events, "cat_events": cat_events, "duration": duration, "active_events": app_events};
   `;
   return querystr_to_array(code);
 }
@@ -282,8 +327,16 @@ export function appQuery(
 // variants (upper/lowercase, spacing, .exe suffix) are handled by
 // browser_appname_regex using (?i) flag. See test/unit/queries.test.node.ts for
 // the complete list of known app names these patterns cover.
-const browser_appnames: Record<string, string[]> = {
-  chrome: ['com.google.Chrome', 'com.google.ChromeDev', 'org.chromium.Chromium'],
+export const browser_appnames: Record<string, string[]> = {
+  // Chromium forks (Dia, Arc) run the chrome extension by default, so their
+  // web events land in the chrome bucket. Reverse-domain identifiers don't
+  // match the process-name regex below and have to live here (#927).
+  chrome: [
+    'com.google.Chrome',
+    'com.google.ChromeDev',
+    'org.chromium.Chromium',
+    'company.thebrowser.dia',
+  ],
   firefox: ['org.mozilla.firefox', 'io.gitlab.librewolf-community', 'net.waterfox.waterfox'],
   opera: ['com.opera.Opera'],
   brave: ['com.brave.Browser'],
@@ -315,13 +368,42 @@ function browsersWithBuckets(browserbuckets: string[]): [string, string][] {
 // Used with filter_keyvals_regex in addition to the exact names in browser_appnames.
 // The full set of historical app names these patterns replace is documented in the unit tests.
 // See: test/unit/queries.test.node.ts, https://github.com/ActivityWatch/aw-webui/issues/749
+//
+// Chromium forks (Arc, Dia) run the chrome build of the extension, which announces itself
+// as chrome unless the user overrides the browser name in the extension settings. So by
+// default their events land in the chrome bucket and their app names have to be matched
+// here (#927, ActivityWatch/activitywatch#1094). Fork alternatives are $-anchored so
+// names like "archive" / "Dialog" don't match.
+//
+// Helium is not a Chromium fork itself, but it can run the Chrome Web Store
+// extension build, which reports the "Helium" app name into the chrome bucket
+// the same way (#898). It's listed here rather than in browser_appname_regex.helium
+// so it gets the same dedicated-bucket exclusion as Arc/Dia below.
+//
+// When a dedicated fork bucket participates (today: settings-override Arc, or a
+// standalone Helium bucket), only that fork is stripped from the chrome stream so
+// the dedicated bucket owns those events without dropping other chrome-bucket
+// forks (Dia has no dedicated bucket).
+const CHROME_BASE_ALTS = ['google[-_ ]?chrome', 'chrome', 'chromium'];
+const CHROME_FORK_ALTS: Record<string, string> = {
+  arc: 'arc(\\.exe)?$',
+  dia: 'dia(\\.exe)?$',
+  helium: 'helium(\\.exe)?$',
+};
+
+export function chromeAppnameRegex(excludeForks: Iterable<string> = []): string {
+  const excluded = new Set(excludeForks);
+  const alts = [
+    ...CHROME_BASE_ALTS,
+    ...Object.entries(CHROME_FORK_ALTS)
+      .filter(([name]) => !excluded.has(name))
+      .map(([, alt]) => alt),
+  ];
+  return `(?i)^(${alts.join('|')})`;
+}
+
 export const browser_appname_regex: Record<string, string> = {
-  // Chromium forks (Arc, Dia) run the chrome build of the extension, which announces itself
-  // as chrome unless the user overrides the browser name in the extension settings. So by
-  // default their events land in the chrome bucket and their app names have to be matched
-  // here (#927, ActivityWatch/activitywatch#1094). The standalone arc key below only covers
-  // setups where Arc was picked explicitly in the settings, which changes the bucket name.
-  chrome: '(?i)^(google[-_ ]?chrome|chrome|chromium|arc(\\.exe)?$|dia(\\.exe)?$)',
+  chrome: chromeAppnameRegex(),
   firefox: '(?i)(firefox|librewolf|waterfox|nightly)',
   opera: '(?i)(opera)',
   brave: '(?i)(brave)',
@@ -337,20 +419,38 @@ export const browser_appname_regex: Record<string, string> = {
 
 // Returns a list of active browser events (where the browser was the active window) from all browser buckets
 function browserEvents(params: DesktopQueryParams): string {
+  const browsers = browsersWithBuckets(params.bid_browsers);
+  // The chrome regex matches forks so a fork without a dedicated bucket still
+  // counts (#927). A settings-override Arc bucket can coexist with the default
+  // chrome bucket, and then the same Arc activity would be counted by both
+  // streams. There is no exclude primitive common to both aw-server
+  // implementations (exclude_keyvals is Rust-only), so the chrome stream
+  // strips only the forks that actually have a dedicated bucket.
+  // Dia stays on the chrome stream: it has no dedicated bucket today.
+  const dedicatedChromeForks = browsers
+    .map(([browserName]) => browserName)
+    .filter(name => name in CHROME_FORK_ALTS);
+
   let code = `
     browser_events = [];
   `;
 
-  _.each(browsersWithBuckets(params.bid_browsers), ([browserName, bucketId]) => {
+  _.each(browsers, ([browserName, bucketId]) => {
     const browser_appnames_str = JSON.stringify(browser_appnames[browserName]);
     code += `events_${browserName} = flood(query_bucket("${bucketId}"));
        window_${browserName} = filter_keyvals(events, "app", ${browser_appnames_str});`;
 
-    // Add regex-based matching to cover case/spacing/versioning variants (e.g., Firefox.exe, firefox-esr-esr140)
-    const pattern = browser_appname_regex[browserName];
+    // Add regex-based matching to cover case/spacing/versioning variants (e.g., Firefox.exe, firefox-esr-esr140).
+    let pattern = browser_appname_regex[browserName];
+    if (browserName === 'chrome' && dedicatedChromeForks.length > 0) {
+      pattern = chromeAppnameRegex(dedicatedChromeForks);
+    }
     if (pattern) {
+      // JSON.stringify adds extra unnecessary escaping for backslashes (e.g. '\.' becomes '\\.')
+      // which breaks regex patterns like arc(\.exe)?$ on Windows. Undo the double-escaping.
+      const pattern_str = JSON.stringify(pattern).replace(/\\\\/g, '\\');
       code += `
-       window_${browserName}_re = filter_keyvals_regex(events, "app", ${JSON.stringify(pattern)});
+       window_${browserName}_re = filter_keyvals_regex(events, "app", ${pattern_str});
        window_${browserName} = sort_by_timestamp(concat(window_${browserName}, window_${browserName}_re));`;
     }
 
@@ -360,6 +460,7 @@ function browserEvents(params: DesktopQueryParams): string {
        browser_events = concat(browser_events, events_${browserName});
        browser_events = sort_by_timestamp(browser_events);`;
   });
+
   return code;
 }
 
@@ -376,6 +477,7 @@ export function fullDesktopQuery(params: DesktopQueryParams): string[] {
     title_events = sort_by_duration(merge_events_by_keys(events, ["app", "title"]));
     app_events   = sort_by_duration(merge_events_by_keys(title_events, ["app"]));
     cat_events   = sort_by_duration(merge_events_by_keys(events, ["$category"]));
+    app_cat_events = sort_by_duration(merge_events_by_keys(events, ["app", "$category"]));
 
     app_events  = limit_events(app_events, ${default_limit});
     title_events  = limit_events(title_events, ${default_limit});
@@ -400,6 +502,7 @@ export function fullDesktopQuery(params: DesktopQueryParams): string[] {
     RETURN = {
         "window": {
             "app_events": app_events,
+            "app_cat_events": app_cat_events,
             "title_events": title_events,
             "cat_events": cat_events,
             "active_events": not_afk,
@@ -426,16 +529,26 @@ export function fullDesktopQuery(params: DesktopQueryParams): string[] {
 // 3. Compute the statistics of interest.
 //
 // NOTE: Events from devices are picked in the order of the hostnames array, such that if overlaps are detected the conflict will be resolved by choosing events from the earlier device.
-// NOTE: Only supports desktop devices (for now)
+// NOTE: Desktop hosts (window+afk buckets) and android/ScreenTime-only hosts
+//       (no afkstatus bucket) are both supported, per buildMultideviceHostParams.
+//       Android hosts have no afk filter, matching the single-device Android view.
 // NOTE: Doesn't support browser buckets (and therefore not browser audible detection either)
 //       This is due to the 'unknown' hostname of browser buckets (will hopefully be fixed soon).
 export function multideviceQuery(params: MultiQueryParams): string[] {
+  // app_events is computed from events directly, not chained off
+  // title_events: aw-watcher-android events have no "title" key, so
+  // merge_events_by_keys(events, ["app", "title"]) drops them from
+  // title_events entirely (see canonicalEvents). Chaining app_events off
+  // title_events would silently exclude mobile hosts' app-level
+  // breakdown even though their duration is counted; title breakdown
+  // (which mobile hosts can't provide) stays desktop-only.
   return querystr_to_array(
     `
     ${canonicalMultideviceEvents(params)}
     title_events = sort_by_duration(merge_events_by_keys(events, ["app", "title"]));
-    app_events   = sort_by_duration(merge_events_by_keys(title_events, ["app"]));
+    app_events   = sort_by_duration(merge_events_by_keys(events, ["app"]));
     cat_events   = sort_by_duration(merge_events_by_keys(events, ["$category"]));
+    app_cat_events = sort_by_duration(merge_events_by_keys(events, ["app", "$category"]));
 
     app_events  = limit_events(app_events, ${default_limit});
     title_events  = limit_events(title_events, ${default_limit});
@@ -444,6 +557,7 @@ export function multideviceQuery(params: MultiQueryParams): string[] {
     RETURN = {
         "window": {
             "app_events": app_events,
+            "app_cat_events": app_cat_events,
             "title_events": title_events,
             "cat_events": cat_events,
             "active_events": not_afk,
@@ -453,18 +567,30 @@ export function multideviceQuery(params: MultiQueryParams): string[] {
   );
 }
 
-export function editorActivityQuery(editorbuckets: string[]): string[] {
+// Bundle ID -> app name pairs of ScreenTime (iOS) imports, whose events carry
+// the bundle ID as "app" and the human-readable name as "title". Used to show
+// app names in combined (multidevice) views, like the single-device view does.
+export function screentimeNamesQuery(bucketIds: string[]): string[] {
+  const q = ['events = [];'];
+  for (const bid of bucketIds) {
+    q.push(`events = concat(events, query_bucket("${escape_doublequote(bid)}"));`);
+  }
+  q.push('RETURN = merge_events_by_keys(events, ["app", "title"]);');
+  return q;
+}
+
+export function editorActivityQuery(editorbuckets: string[], limit = default_limit): string[] {
   let q = ['events = [];'];
   for (const editorbucket of editorbuckets) {
     q.push(`events = concat(events, flood(query_bucket("${escape_doublequote(editorbucket)}")));`);
   }
   q = q.concat([
     'files = sort_by_duration(merge_events_by_keys(events, ["file", "language"]));',
-    `files = limit_events(files, ${default_limit});`,
+    `files = limit_events(files, ${limit});`,
     'languages = sort_by_duration(merge_events_by_keys(events, ["language"]));',
-    `languages = limit_events(languages, ${default_limit});`,
+    `languages = limit_events(languages, ${limit});`,
     'projects = sort_by_duration(merge_events_by_keys(events, ["project"]));',
-    `projects = limit_events(projects, ${default_limit});`,
+    `projects = limit_events(projects, ${limit});`,
     'duration = sum_durations(events);',
     'RETURN = {"files": files, "languages": languages, "projects": projects, "duration": duration};',
   ]);
@@ -498,8 +624,63 @@ export function activityQueryAndroid(androidbucket: string): string[] {
   return [`events = query_bucket("${androidbucket}");`, 'RETURN = sum_durations(events);'];
 }
 
+// Active-time query across several devices, used for the period-usage bars
+// in multidevice mode. Desktop hosts contribute their not-afk periods,
+// mobile hosts (no afkstatus bucket) their app-usage events, matching how
+// the multidevice query treats them. period_union makes simultaneous use of
+// two devices count once. Returns the total active duration (seconds).
+export function multideviceActivityQuery(afkbuckets: string[], androidbuckets: string[]): string[] {
+  let q = ['not_afk = [];'];
+  for (const afkbucket of afkbuckets) {
+    q = q.concat([
+      `not_afk_curr = query_bucket("${escape_doublequote(afkbucket)}");`,
+      `not_afk_curr = filter_keyvals(not_afk_curr, "status", ["not-afk"]);`,
+      `not_afk = period_union(not_afk, not_afk_curr);`,
+    ]);
+  }
+  for (const androidbucket of androidbuckets) {
+    q = q.concat([
+      `not_afk = period_union(not_afk, query_bucket("${escape_doublequote(androidbucket)}"));`,
+    ]);
+  }
+  q = q.concat(['RETURN = sum_durations(not_afk);']);
+  return q;
+}
+
 // Returns a query that yields a dict with a key "cat_events" which is an
 // array of one event per category, with the duration of each event set to the sum of the category durations.
+// Query for the single-pass activity-analysis context (see AISummaryView).
+//
+// Returns the AFK-filtered, categorized timeline plus browser domains and the
+// unfiltered tracked duration, so the client can derive bounded statistics locally
+// without downloading a raw, uncapped bucket. Titles and URLs stay on the device;
+// see src/util/activityContext.ts for what is actually exported.
+export function analysisContextQuery(params: DesktopQueryParams): string[] {
+  // browser_domains is intentionally not limited here. buildActivityContext
+  // computes truncation metadata (total + otherSeconds) over the full domain list;
+  // a server-side cap would make the reported totals wrong. Domain events are
+  // one short string per domain, so the response stays small; the client applies
+  // the display limit with correct truncation accounting.
+  return querystr_to_array(
+    `
+    ${canonicalEvents({
+      ...params,
+      bid_window: escape_doublequote(params.bid_window),
+      bid_afk: escape_doublequote(params.bid_afk),
+      bid_browsers: _.map(params.bid_browsers, escape_doublequote),
+    })}
+    events = sort_by_timestamp(events);
+    browser_events = split_url_events(browser_events);
+    browser_domains = sort_by_duration(merge_events_by_keys(browser_events, ["$domain"]));
+    tracked_events = ${queryBucket(escape_doublequote(params.bid_window))};
+    RETURN = {
+        "events": events,
+        "browser_domains": browser_domains,
+        "tracked_duration": sum_durations(tracked_events)
+    };`
+  );
+}
+
 export function categoryQuery(
   params: MultiQueryParams | DesktopQueryParams | AndroidQueryParams
 ): string[] {
@@ -511,12 +692,52 @@ export function categoryQuery(
   return querystr_to_array(q);
 }
 
+// Query browser buckets standalone, without requiring window/afk watchers.
+// Used on Android and other platforms where only aw-watcher-web is running.
+export function browserOnlyQuery(browserbuckets: string[]): string[] {
+  const escaped = browserbuckets.map(escape_doublequote);
+
+  let code = `browser_events = [];`;
+  escaped.forEach((bucketId, i) => {
+    code += `
+    events_browser_${i} = flood(query_bucket("${bucketId}"));
+    browser_events = concat(browser_events, events_browser_${i});`;
+  });
+
+  code += `
+    browser_events = split_url_events(browser_events);
+    browser_urls = merge_events_by_keys(browser_events, ["url"]);
+    browser_urls = sort_by_duration(browser_urls);
+    browser_urls = limit_events(browser_urls, ${default_limit});
+    browser_domains = merge_events_by_keys(browser_events, ["$domain"]);
+    browser_domains = sort_by_duration(browser_domains);
+    browser_domains = limit_events(browser_domains, ${default_limit});
+    browser_titles = merge_events_by_keys(browser_events, ["title"]);
+    browser_titles = sort_by_duration(browser_titles);
+    browser_titles = limit_events(browser_titles, ${default_limit});
+    browser_duration = sum_durations(browser_events);
+    RETURN = {
+      "browser": {
+        "domains": browser_domains,
+        "urls": browser_urls,
+        "titles": browser_titles,
+        "duration": browser_duration
+      }
+    };`;
+
+  return querystr_to_array(code);
+}
+
 export default {
   fullDesktopQuery,
+  analysisContextQuery,
   multideviceQuery,
   appQuery,
   activityQuery,
   activityQueryAndroid,
+  multideviceActivityQuery,
+  screentimeNamesQuery,
   categoryQuery,
   editorActivityQuery,
+  browserOnlyQuery,
 };

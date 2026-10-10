@@ -2,9 +2,6 @@
 div
   h3 {{ $t('buckets.title') }}
 
-  b-alert(show)
-    | {{ $t('buckets.moreWatchers') }} #[a(href="https://docs.activitywatch.net/en/latest/watchers.html") {{ $t('buckets.docsLink') }}].
-
   b-card.bucket-card.mb-3(
     v-for="device in bucketsStore.bucketsByDevice",
     :key="device.hostname || device.device_id",
@@ -18,8 +15,8 @@ div
         div
           span.font-weight-bold {{ device.hostname }}
           b-badge.ml-2(v-if="serverStore.info && serverStore.info.hostname == device.hostname" variant="info") {{ $t('buckets.thisDevice') }}
-          div.small.text-muted(v-if="device.hostname !== device.device_id")
-            | ID: {{ device.id }}
+          div.small.text-muted(v-if="device.device_id && device.hostname !== device.device_id")
+            | ID: {{ device.device_id }}
           div.small(v-if="deviceHasEvents(device)")
             span.text-muted {{ $t('buckets.lastUpdatedInline') }}&nbsp;
             time(:class="{'text-success': isRecent(device.last_updated)}",
@@ -56,8 +53,12 @@ div
       template(v-slot:cell(id)="data")
         small.text-monospace.bucket-id(:title="data.item.id") {{ data.item.id }}
       template(v-slot:cell(last_updated)="data")
-        small(v-if="bucketHasEvents(data.item)", :class="{'text-success': isRecent(data.item.last_updated)}")
-          | {{ data.item.last_updated | friendlytime }}
+        time.small.bucket-updated(v-if="bucketHasEvents(data.item)",
+                                 :class="{'text-success': isRecent(data.item.last_updated)}",
+                                 :datetime="data.item.last_updated",
+                                 :title="data.item.last_updated")
+          span.d-md-none {{ compactRelativeTime(data.item.last_updated, true) }}
+          span.d-none.d-md-inline {{ compactRelativeTime(data.item.last_updated) }}
         small.text-muted(v-else) {{ $t('buckets.noEvents') }}
       template(v-slot:cell(actions)="data")
         b-button-group(size="sm")
@@ -129,7 +130,9 @@ div
 
   b-card-group.deck
     b-card(:header="$t('buckets.importBuckets')")
-      b-alert(v-if="import_error" show variant="danger" dismissible)
+      b-alert(v-if="import_success" show variant="success" dismissible @dismissed="import_success = false")
+        | {{ $t('buckets.importSuccess') }}
+      b-alert(v-if="import_error" show variant="danger" dismissible @dismissed="import_error = null")
         | {{ import_error }}
       b-form-file(v-model="import_file"
                   :placeholder="$t('buckets.importPlaceholder')"
@@ -143,11 +146,18 @@ div
       p.small.text-muted {{ $t('buckets.exportHelp') }}
       b-button(@click="export_all_buckets_json()",
                :title="$t('buckets.exportAllJson')",
+               :disabled="exporting",
                variant="outline-secondary")
-        icon.mr-1(name="download")
-        | {{ $t('buckets.exportAllJson') }}
+        b-spinner.mr-1(v-if="exporting", small)
+        icon.mr-1(v-else, name="download")
+        | {{ exporting ? $t('buckets.exporting') : $t('buckets.exportAllJson') }}
+      b-alert.mt-2(v-if="export_error", variant="danger", show, dismissible, @dismissed="export_error = null")
+        | {{ export_error }}
 
   hr
+
+  b-alert(show)
+    | {{ $t('buckets.moreWatchers') }} #[a(href="https://docs.activitywatch.net/en/latest/watchers.html") {{ $t('buckets.docsLink') }}].
 
   aw-devonly(reason="This section is still under development")
     h4.p-2 {{ $t('buckets.tools') }}
@@ -192,6 +202,34 @@ div
   vertical-align: middle;
 }
 
+// Phones: just enough for the short labels. md+: room for the folder icon
+// and longer translations of "Open".
+::v-deep .bucket-table .col-updated {
+  width: 7rem;
+}
+
+::v-deep .bucket-table .col-actions {
+  width: 6.5rem;
+}
+
+@media (min-width: 768px) {
+  ::v-deep .bucket-table .col-updated {
+    width: 9rem;
+  }
+
+  ::v-deep .bucket-table .col-actions {
+    width: 10rem;
+  }
+}
+
+.bucket-updated {
+  white-space: nowrap;
+}
+
+::v-deep .bucket-table td .btn {
+  white-space: nowrap;
+}
+
 ::v-deep .bucket-id {
   display: inline-block;
   max-width: 100%;
@@ -229,12 +267,26 @@ import 'vue-awesome/icons/exclamation-triangle';
 import 'vue-awesome/icons/ellipsis-v';
 
 import _ from 'lodash';
-import Papa from 'papaparse';
 import moment from 'moment';
 
 import { useServerStore } from '~/stores/server';
 import { useBucketsStore } from '~/stores/buckets';
-import { downloadFile } from '~/util/export';
+import { getStoredApiToken } from '~/util/awclient';
+import { androidExportFromUrl, downloadBlob } from '~/util/export';
+import { compact_relative_time } from '~/util/time';
+
+// NOTE: keep this out of the component's `methods`. The global
+// `asyncErrorCapturedMixin` wraps every async method so that its rejection is
+// reported to the global `ErrorBoundary` and the *returned* promise resolves.
+// A wrapped `importBuckets` would therefore never reject inside the
+// `import_file` watcher below, and a failed import would still set
+// `import_success = true` (showing a success alert next to the error).
+async function importBuckets(aw, importFile) {
+  const formData = new FormData();
+  formData.append('buckets.json', importFile);
+  const headers = { 'Content-Type': 'multipart/form-data' };
+  return aw.req.post('/0/import', formData, { headers });
+}
 
 export default {
   name: 'Buckets',
@@ -250,31 +302,40 @@ export default {
 
       import_file: null,
       import_error: null,
+      import_success: false,
       delete_bucket_selected: null,
       delete_host_selected: null,
       deleting_host: false,
       delete_host_error: null,
+      export_inflight: 0,
+      export_error: null as string | null,
     };
   },
   computed: {
+    exporting() {
+      return this.export_inflight > 0;
+    },
     fields() {
       return [
         {
           key: 'id',
           label: this.$t('buckets.bucketId'),
           sortable: true,
-          thStyle: { width: '65%' },
         },
+        // Fixed widths for the narrow columns (see .col-* styles): with
+        // table-layout: fixed, percentages squeezed the Open + kebab group
+        // past the card edge on phones. The ID column takes the rest and
+        // ellipsizes.
         {
           key: 'last_updated',
           label: this.$t('buckets.updated'),
           sortable: true,
-          thStyle: { width: '20%' },
+          thClass: 'col-updated',
         },
         {
           key: 'actions',
           label: '',
-          thStyle: { width: '15%' },
+          thClass: 'col-actions',
           tdClass: 'text-right',
         },
       ];
@@ -291,11 +352,18 @@ export default {
   watch: {
     import_file: async function (_new_value, _old_value) {
       if (this.import_file != null) {
+        // Clear the previous outcome up-front so a stale success/error alert
+        // isn't shown beside the spinner while the new import is in flight.
+        this.import_success = false;
+        this.import_error = null;
         try {
-          await this.importBuckets(this.import_file);
+          await importBuckets(this.$aw, this.import_file);
           this.import_error = null;
+          this.import_success = true;
         } catch (err) {
-          this.import_error = 'Import failed, see aw-server logs for more info';
+          const serverMessage = err?.response?.data?.message;
+          this.import_error = serverMessage || this.$t('buckets.importFailedGeneric');
+          this.import_success = false;
         }
         await this.bucketsStore.loadBuckets();
         this.import_file = null;
@@ -306,6 +374,9 @@ export default {
     await this.bucketsStore.loadBuckets();
   },
   methods: {
+    compactRelativeTime: function (timestamp: string, unitOnly = false) {
+      return compact_relative_time(timestamp, this.$i18n.locale, unitOnly);
+    },
     isRecent: function (date) {
       return moment().diff(date) / 1000 < 120;
     },
@@ -371,41 +442,78 @@ export default {
         this.deleting_host = false;
       }
     },
-    importBuckets: async function (importFile) {
-      const formData = new FormData();
-      formData.append('buckets.json', importFile);
-      const headers = { 'Content-Type': 'multipart/form-data' };
-      return this.$aw.req.post('/0/import', formData, { headers });
-    },
 
     async export_bucket_json(bucketId: string) {
-      const response = await this.$aw.req.get(`/0/buckets/${bucketId}/export`);
-      const data = JSON.stringify(response.data, null, 2);
-      await downloadFile(`aw-bucket-export-${bucketId}.json`, data, 'application/json');
+      await this.export_json(`/0/buckets/${bucketId}/export`, `aw-bucket-export-${bucketId}.json`);
     },
 
     async export_all_buckets_json() {
-      const response = await this.$aw.req.get('/0/export');
-      const data = JSON.stringify(response.data, null, 2);
-      await downloadFile('aw-bucket-export.json', data, 'application/json');
+      await this.export_json('/0/export', 'aw-buckets-export.json');
+    },
+
+    async export_json(path: string, filename: string) {
+      const url = `${this.$aw.req.defaults.baseURL || ''}${path}`;
+      if (androidExportFromUrl(url, filename)) {
+        return;
+      }
+      this.export_inflight += 1;
+      this.export_error = null;
+      try {
+        // Keep the axios client so Authorization: Bearer is sent. blob
+        // skips JSON.parse/pretty-print. A 5-minute timeout beats the 30s
+        // default without leaving the spinner stuck if the server stalls.
+        const response = await this.$aw.req.get(path, {
+          timeout: 300_000,
+          responseType: 'blob',
+        });
+        await downloadBlob(filename, response.data, 'application/json');
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        this.export_error = `Export failed: ${msg}`;
+        console.error('JSON export failed:', e);
+      } finally {
+        this.export_inflight = Math.max(0, this.export_inflight - 1);
+      }
     },
 
     async export_csv(bucketId: string) {
-      const bucket = await this.bucketsStore.getBucketWithEvents({ id: bucketId });
-      const events = bucket.events;
-      const datakeys = events.length > 0 ? Object.keys(events[0].data) : [];
-      const columns = ['timestamp', 'duration'].concat(datakeys);
-      const data = events.map(e => {
-        return Object.assign(
-          { timestamp: e.timestamp, duration: e.duration },
-          Object.fromEntries(datakeys.map(k => [k, e.data[k]]))
-        );
-      });
-      const csv = Papa.unparse(data, { columns, header: true });
-      const filename = `aw-events-export-${bucketId}-${new Date()
-        .toISOString()
-        .substring(0, 10)}.csv`;
-      await downloadFile(filename, csv, 'text/csv');
+      const filename = `aw-events-export-${bucketId}.csv`;
+      const path = `/0/buckets/${encodeURIComponent(bucketId)}/export/csv`;
+      const url = `${this.$aw.req.defaults.baseURL || ''}${path}`;
+      // Android WebView: native URL download so the CSV never enters JS memory.
+      if (androidExportFromUrl(url, filename)) {
+        return;
+      }
+      this.export_inflight += 1;
+      this.export_error = null;
+      try {
+        // Default local installs have no API token. Let the browser stream the
+        // download from the server endpoint so 200 OK lands immediately and
+        // the CSV never enters JS memory. Tauri cannot use <a download>, and
+        // token-authenticated deployments need Authorization: Bearer, so those
+        // still go through the blob client.
+        if (!('__TAURI__' in window) && !getStoredApiToken()) {
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = filename;
+          link.style.display = 'none';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          return;
+        }
+        const response = await this.$aw.req.get(path, {
+          timeout: 300_000,
+          responseType: 'blob',
+        });
+        await downloadBlob(filename, response.data, 'text/csv');
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        this.export_error = `Export failed: ${msg}`;
+        console.error('CSV export failed:', e);
+      } finally {
+        this.export_inflight = Math.max(0, this.export_inflight - 1);
+      }
     },
   },
 };

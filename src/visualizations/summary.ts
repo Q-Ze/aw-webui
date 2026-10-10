@@ -9,12 +9,21 @@ import { getCategoryColorFromString } from '~/util/color';
 import { seconds_to_duration } from '~/util/time';
 import { IEvent } from '~/util/interfaces';
 
-// Colors that adapt to the dark theme (see static/dark.css for the overrides).
-// SVG presentation attributes can't use CSS variables, so these are set via
-// inline style() where var() works.
-const textColor = 'var(--aw-vis-text, #3C4257)';
-const subTextColor = 'var(--aw-vis-subtext, #6B7280)';
-const trackColor = 'var(--aw-vis-track, #EDF1F6)';
+const textColor = '#333';
+const durationColor = '#444';
+
+// Unique per-chart prefix for clipPath ids (several summaries can share a page).
+let chartCounter = 0;
+
+// Label colours for text drawn *over* a bar: pick whichever of dark/light
+// contrasts better with the bar itself, so dark bars get light labels and
+// light bars get dark labels, in both light and dark theme.
+function inBarColors(barColor: string): { name: string; duration: string } {
+  const bar = Color(barColor);
+  return bar.contrast(Color(textColor)) >= bar.contrast(Color('#fff'))
+    ? { name: textColor, duration: textColor }
+    : { name: '#fff', duration: '#eee' };
+}
 
 function create(container: HTMLElement) {
   // Clear element
@@ -62,34 +71,29 @@ function update(container: HTMLElement, apps: Entry[]) {
   svg_elem.innerHTML = '';
   const svg = d3.select(svg_elem);
 
-  // Remove apps without a duration from list
+  // Remove apps without a duration or with zero duration from list
   apps = apps.filter(function (app) {
-    return app.duration !== undefined;
+    return app.duration !== undefined && app.duration > 0;
   });
   if (apps.length <= 0) {
+    // All apps were zero/undefined duration — nothing to draw.
     set_status(container, 'No data');
     return container;
   }
 
-  const total_duration = _.sumBy(apps, 'duration');
-  const longest_duration = apps[0].duration;
-
-  // Layout: each row is a label line (name left, duration + share right)
-  // above a full-width track with a rounded gradient fill proportional to
-  // the longest entry. The track makes relative magnitudes readable even
-  // when all values are small.
-  const labelSize = 13;
-  const rowHeight = 44;
-  const barHeight = 9;
-  const rowGap = 9;
-
+  const chartId = 'appsummary-' + chartCounter++;
   const defs = svg.append('defs');
 
-  let curr_y = 2;
+  let curr_y = 0;
+  const longest_duration = apps[0].duration;
   _.each(apps, function (app, i) {
+    // TODO: Expand on click and list titles
+
     // Variables
-    const pct_of_longest = app.duration / longest_duration;
-    const pct_of_total = total_duration > 0 ? app.duration / total_duration : 0;
+    const widthPct = (app.duration / longest_duration) * 100;
+    const width = widthPct + '%';
+    const barHeight = 46;
+    const textSize = 14;
 
     let appcolor: string;
     if (Array.isArray(app.colorKey)) {
@@ -99,139 +103,168 @@ function update(container: HTMLElement, apps: Entry[]) {
       appcolor = app.color || getCategoryColorFromString(app.colorKey || app.name);
     }
 
-    // A vertical gradient from the base color to a slightly darker shade
-    // gives the bars depth without changing the palette hues.
-    const gradId = 'awsum-grad-' + i + '-' + Math.abs(hash_str(app.name));
-    const grad = defs
-      .append('linearGradient')
-      .attr('id', gradId)
-      .attr('x1', '0')
-      .attr('y1', '0')
-      .attr('x2', '0')
-      .attr('y2', '1');
-    grad
-      .append('stop')
-      .attr('offset', '0%')
-      .attr('stop-color', Color(appcolor).lighten(0.12).hex());
-    grad.append('stop').attr('offset', '100%').attr('stop-color', appcolor);
+    const hovercolor = Color(appcolor).darken(0.1).hex();
+
+    // Clip-path ids are defined here so the hover handlers can reference them.
+    const clipIn = `${chartId}-in-${i}`;
+    const clipOut = `${chartId}-out-${i}`;
 
     // Add a parent <a> element if link is set
     const a = app.link ? svg.append('a').attr('href', app.link) : svg;
 
     // The group representing an entry in the barchart
     const eg = a.append('g');
-    eg.attr('id', 'summary_' + i).style('cursor', app.link ? 'pointer' : 'default');
+    // Re-colour in-bar labels from the bar's *displayed* fill (computed style),
+    // so theme overrides (e.g. dark.css !important rules) are honoured. Called
+    // in a rAF so the browser has applied the new fill first.
+    const recolorInBarLabels = () => {
+      window.requestAnimationFrame(() => {
+        const barRect = eg.select<SVGRectElement>('rect').node();
+        if (!barRect) return;
+        const computedFill = window.getComputedStyle(barRect).fill;
+        if (!computedFill) return;
+        try {
+          const colors = inBarColors(Color(computedFill).hex());
+          eg.selectAll<SVGTextElement, unknown>(`text[clip-path="url(#${clipIn})"]`).each(function (
+            _e,
+            j
+          ) {
+            const sel = d3.select<SVGTextElement, unknown>(this);
+            if (j === 0) sel.style('fill', colors.name, 'important');
+            if (j === 1) sel.style('fill', colors.duration, 'important');
+          });
+        } catch {
+          // ignore
+        }
+      });
+    };
+    eg.attr('id', 'summary_' + i)
+      .on('mouseover', function () {
+        eg.select('rect').style('fill', hovercolor);
+        // Keep in-bar label colours consistent with the *displayed* hover fill:
+        // themes may override the hover fill (e.g. dark.css), so derive label
+        // colours from the computed style rather than the raw hover color.
+        recolorInBarLabels();
+      })
+      .on('mouseout', function () {
+        eg.select('rect').style('fill', appcolor);
+        // Same reasoning as mouseover: the restored bar colour may be themed.
+        recolorInBarLabels();
+      });
 
     eg.append('title').text(app.hovertext + '\n' + seconds_to_duration(app.duration));
 
-    const displayName = truncate_middle(app.name || '', 72);
-
-    // Name (left, first line)
-    eg.append('text')
-      .attr('x', 1)
-      .attr('y', curr_y + labelSize)
-      .text(displayName)
-      .attr('font-family', 'inherit')
-      .attr('font-size', labelSize + 'px')
-      .attr('font-weight', 500)
-      .style('fill', textColor)
-      .style('dominant-baseline', 'auto');
-
-    // Duration + share of total (right-aligned, first line)
-    const meta = seconds_to_duration(app.duration) + ' · ' + (pct_of_total * 100).toFixed(0) + '%';
-    const metaText = eg
-      .append('text')
-      .attr('x', '100%')
-      .attr('dx', -1)
-      .attr('y', curr_y + labelSize)
-      .attr('text-anchor', 'end')
-      .text(meta)
-      .attr('font-family', 'inherit')
-      .attr('font-size', labelSize - 1.5 + 'px')
-      .style('fill', subTextColor)
-      .style('dominant-baseline', 'auto');
-
-    // Avoid name/meta overlap on narrow containers: if the name would run
-    // into the meta text, truncate it with an ellipsis. Measured via
-    // getComputedTextLength after insertion.
-    try {
-      const metaWidth = (metaText.node() as SVGTextElement).getComputedTextLength();
-      const nameNode = eg.select('text').node() as SVGTextElement;
-      const availWidth = (svg_elem as SVGSVGElement).clientWidth - metaWidth - 16;
-      if (nameNode.getComputedTextLength() > availWidth && availWidth > 40) {
-        let name = displayName;
-        while (name.length > 4 && nameNode.getComputedTextLength() > availWidth) {
-          name = name.slice(0, -2);
-          nameNode.textContent = name + '…';
-        }
-      }
-    } catch (e) {
-      // getComputedTextLength can fail if the svg is display:none — the
-      // full name is then shown untruncated, which is acceptable.
-    }
-
-    // Track (full width, gives the fill something to be measured against)
+    // Color box background
     eg.append('rect')
       .attr('x', 0)
-      .attr('y', curr_y + labelSize + 6)
-      .attr('width', '100%')
+      .attr('y', curr_y)
+      .attr('rx', 5)
+      .attr('ry', 5)
+      .attr('width', width)
       .attr('height', barHeight)
-      .attr('rx', barHeight / 2)
-      .attr('ry', barHeight / 2)
-      .style('fill', trackColor);
+      .style('fill', appcolor);
 
-    // Fill bar with the per-app gradient, animated in on first render.
-    const fillY = curr_y + labelSize + 6;
-    const fill = eg
+    // Labels can be longer than a short bar, so each label is drawn twice:
+    // once clipped to the bar (coloured for contrast against the bar) and once
+    // clipped to the remaining width (default text colour, which dark.css
+    // themes for the page background). See ActivityWatch/aw-server-rust#621.
+    defs
+      .append('clipPath')
+      .attr('id', clipIn)
       .append('rect')
       .attr('x', 0)
-      .attr('y', fillY)
-      .attr('height', barHeight)
-      .attr('rx', barHeight / 2)
-      .attr('ry', barHeight / 2)
-      .attr('fill', 'url(#' + gradId + ')')
-      .style('opacity', 0.95);
+      .attr('y', curr_y)
+      .attr('width', width)
+      .attr('height', barHeight);
+    defs
+      .append('clipPath')
+      .attr('id', clipOut)
+      .append('rect')
+      .attr('x', width)
+      .attr('y', curr_y)
+      .attr('width', 100 - widthPct + '%')
+      .attr('height', barHeight);
+    const onBar = inBarColors(appcolor);
 
-    fill
-      .attr('width', 0)
-      .transition()
-      .duration(500)
-      .delay(i * 40)
-      .ease(d3.easeCubicOut)
-      .attr('width', Math.max(pct_of_longest * 100, 1.2) + '%')
-      .style('opacity', 1);
+    // App name. Truncate long titles so wide window titles don't run
+    // visually past their bar; full text remains in the hover tooltip
+    // (the <title> appended above) so no information is hidden.
+    const maxNameChars = 80;
+    const displayName =
+      app.name && app.name.length > maxNameChars
+        ? app.name.slice(0, maxNameChars - 1) + '…'
+        : app.name;
+    for (const [clip, inBar] of [
+      [clipIn, true],
+      [clipOut, false],
+    ] as const) {
+      const name = eg
+        .append('text')
+        .attr('x', 5)
+        .attr('y', curr_y + 1.4 * textSize)
+        .attr('clip-path', `url(#${clip})`)
+        .attr('aria-hidden', 'true')
+        .text(displayName)
+        .attr('font-family', 'sans-serif')
+        .attr('font-size', textSize + 'px')
+        .attr('fill', textColor);
 
-    // Hover: lift the bar slightly and strengthen the color.
-    eg.on('mouseover', function () {
-      fill.style('opacity', 1).attr('filter', 'brightness(1.06)');
-    }).on('mouseout', function () {
-      fill.style('opacity', 0.95).attr('filter', null);
-    });
+      // Duration
+      const duration = eg
+        .append('text')
+        .attr('x', 5)
+        .attr('y', curr_y + 2.6 * textSize)
+        .attr('clip-path', `url(#${clip})`)
+        .attr('aria-hidden', 'true')
+        .text(seconds_to_duration(app.duration))
+        .attr('font-family', 'sans-serif')
+        .attr('font-size', textSize - 3 + 'px')
+        .attr('fill', durationColor);
 
-    curr_y += rowHeight + rowGap;
+      if (inBar) {
+        // Inline !important so the theme's generic `svg text` override
+        // (dark.css) doesn't repaint text that sits on the bar itself.
+        name.style('fill', onBar.name, 'important').style('text-shadow', 'none', 'important');
+        duration
+          .style('fill', onBar.duration, 'important')
+          .style('text-shadow', 'none', 'important');
+      }
+    }
+
+    curr_y += barHeight + 5;
   });
-  curr_y -= rowGap;
-  curr_y += 2;
+  curr_y -= 5;
 
   svg.attr('height', curr_y);
 
-  return container;
-}
-
-function hash_str(s: string): number {
-  let hash = 0;
-  if (s.length === 0) return hash;
-  for (let i = 0; i < s.length; i++) {
-    hash = (hash << 5) - hash + s.charCodeAt(i);
-    hash = hash & hash;
+  // Post-render pass: re-read each bar's actual computed fill (CSS may have
+  // overridden it, e.g. dark.css recolors uncategorized #CCC bars to #666)
+  // and update the in-bar label colours to maintain contrast.
+  if (typeof window !== 'undefined' && window.requestAnimationFrame) {
+    window.requestAnimationFrame(() => {
+      for (let i = 0; i < apps.length; i++) {
+        const group = svg_elem.querySelector(`#summary_${i}`) as SVGGElement | null;
+        if (!group) continue;
+        const barRect = group.querySelector('rect') as SVGRectElement | null;
+        if (!barRect) continue;
+        const computedFill = window.getComputedStyle(barRect).fill;
+        if (!computedFill) continue;
+        let actualHex: string;
+        try {
+          actualHex = Color(computedFill).hex();
+        } catch {
+          continue;
+        }
+        const colors = inBarColors(actualHex);
+        const clipInRef = `url(#${chartId}-in-${i})`;
+        const inBarTexts = group.querySelectorAll<SVGTextElement>(`text[clip-path="${clipInRef}"]`);
+        if (inBarTexts[0]) inBarTexts[0].style.setProperty('fill', colors.name, 'important');
+        if (inBarTexts[1]) inBarTexts[1].style.setProperty('fill', colors.duration, 'important');
+      }
+    });
   }
-  return hash;
-}
 
-function truncate_middle(s: string, maxChars: number): string {
-  if (s.length <= maxChars) return s;
-  const half = Math.floor(maxChars / 2) - 1;
-  return s.slice(0, half) + '…' + s.slice(s.length - half);
+  return container;
 }
 
 function updateSummedEvents(

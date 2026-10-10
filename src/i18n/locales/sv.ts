@@ -148,6 +148,9 @@ export default {
       discard: 'Ignorera',
       addCategory: 'Lägg till kategori',
       categories: 'Kategorier',
+      priority: 'Prioritet',
+      priorityDefault: 'Standard',
+      priorityInteger: 'Prioriteten måste vara ett heltal.',
       builderTitle: 'Kategoribyggare',
       builderSubtitle: 'Skapa regler från okategoriserad aktivitet',
       openBuilder: 'Öppna byggaren',
@@ -161,12 +164,6 @@ export default {
       forceDevmode: 'Tvinga utvecklarläge',
       forceDevmodeHelp:
         'Utvecklarläget aktiverar vissa funktioner som fortfarande är under utveckling.',
-      showYearly: 'Visa årligt tidsintervall',
-      showYearlyHelp:
-        'Att fråga efter ett helt år är en mycket tung operation och leder sannolikt till timeout. Frågan kan dock vara tillräckligt snabb om du kör aw-server-rust.',
-      multidevice: 'Använd fråga för flera enheter',
-      multideviceHelp:
-        'En fråga för flera enheter samlar händelser från flera värdar i aktivitetsvyn. Det är ett tidigt experiment som för närvarande inte stöder webbläsarbuckets eller funktionen som räknar hörbart innehåll som aktivt.',
       requestTimeout: 'Timeout för begäran',
       requestTimeoutHelp:
         'Den maximala tid en serverbegäran får ta innan den avbryts. Ett högt värde kan vara användbart för stora frågor. Observera att webbgränssnittet måste läsas om för att ändringen ska börja gälla.',
@@ -246,6 +243,8 @@ export default {
     bucketsToDelete: 'Buckets som kommer att tas bort:',
     deleting: 'Tar bort...',
     importing: 'Importerar...',
+    importSuccess: 'Importen slutfördes!',
+    importFailedGeneric: 'Importen misslyckades, se aw-server-loggen för mer information',
     importHelpNew:
       'Ange en JSON-fil som exporterats från en enskild bucket eller från flera buckets. Importen misslyckas om en bucket med samma ID redan finns.',
     exportHelp:
@@ -273,9 +272,18 @@ export default {
   },
   activity: {
     title: 'Aktivitet',
+    browserAllowlistMiss:
+      'Inget matchande webbläsarfönster för den här perioden. Om du surfade i en Chromium-/Firefox-fork kanske dess appnamn inte känns igen ännu.',
     for: 'för',
     host: 'Värd:',
+    devices: 'Enheter:',
+    allDevices: 'Alla enheter',
+    allDevicesCount: 'Alla enheter ({count})',
+    onlyThisDevice: 'endast',
+    multideviceNote: 'Webbläsar- och stoppursdata visas bara när en enskild enhet är vald.',
     timeActive: 'Aktiv tid:',
+    timeActiveTooltip:
+      'Active window time in the queried range, after the filters below. The bars in the period chart show raw device active time, so they can be slightly higher.',
     queryRange: 'Frågeintervall:',
     filters: 'Filter',
     filtersTitle: 'Filter',
@@ -293,6 +301,12 @@ export default {
     periodLast30d: '30 dagar',
     periodLast7dTitle: 'senaste 7 dagarna',
     periodLast30dTitle: 'senaste 30 dagarna',
+    periodCustomRange: 'anpassat intervall',
+    rangeStart: 'Startdatum',
+    rangeEnd: 'Slutdatum',
+    invalidRange: 'Ogiltigt datumintervall i URL:en, visar idag istället.',
+    periodAllTime: 'all tid',
+    allTimeSlowHint: 'All tid kan ta en stund med stora databaser.',
     filterAfkTooltip: 'Filtrera bort tid då AFK-bevakaren inte upptäckte någon inmatning.',
     filterAudibleTooltip:
       'Om det aktiva fönstret är en hörbar webbläsarflik räknas den som aktiv. Kräver en webbläsarbevakare.',
@@ -336,6 +350,8 @@ export default {
     periodThisYear: 'det här året',
     periodLast7d: 'de senaste 7 dagarna',
     periodLast30d: 'de senaste 30 dagarna',
+    periodCustomRange: 'i det valda intervallet',
+    periodAllTime: 'totalt',
   },
   visualizations: {
     noData: '(inga data)',

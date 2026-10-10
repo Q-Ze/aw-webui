@@ -17,6 +17,8 @@ export interface Rule {
   type: 'regex' | 'none';
   regex?: string;
   ignore_case?: boolean;
+  priority?: number;
+  weight?: number;
   /** When set, only these event.data keys are tested. Absent = all string fields. */
   select_keys?: string[];
 }
@@ -50,6 +52,8 @@ export interface Category {
 export interface CategorySet {
   id: string;
   categories: Category[];
+  /** JSON-encoded category paths hidden from secondary sets when this set is primary. */
+  tombstones?: string[];
 }
 
 /**
@@ -59,11 +63,12 @@ export interface CategorySet {
  */
 export function mergeCategorySets(sets: CategorySet[]): Category[] {
   const seen = new Set<string>();
+  const hidden = new Set(sets[0]?.tombstones ?? []);
   const merged: Category[] = [];
-  for (const set of sets) {
+  for (const [index, set] of sets.entries()) {
     for (const cat of set.categories) {
       const key = JSON.stringify(cat.name);
-      if (!seen.has(key)) {
+      if (!seen.has(key) && (index === 0 || !hidden.has(key))) {
         seen.add(key);
         merged.push(cat);
       }
@@ -74,13 +79,30 @@ export function mergeCategorySets(sets: CategorySet[]): Category[] {
 
 const COLOR_UNCAT = '#CCC';
 
+// Colors the default categories had before the palette was softened (#1058).
+// First-run `settings.save()` persists the install defaults, so everyone who
+// never changed a color has these stored. They still count as install defaults
+// (see matchesInstallDefault) and are shown in the current default color (see
+// migrateLegacyDefaultColors). A color the user picked themselves is kept.
+// A Map, not an object literal: user category names like `constructor` must
+// not resolve to inherited properties.
+const LEGACY_DEFAULT_COLORS = new Map<string, string>([
+  ['Work', '#0F0'],
+  ['Media', '#F33'],
+  ['Media>Games', '#F80'],
+  ['Media>Video', '#F33'],
+  ['Media>Social Media', '#FCC400'],
+  ['Media>Music', '#A8FC00'],
+  ['Comms', '#9FF'],
+]);
+
 // The default categories
 // Should be run through createMissingParents before being used in most cases.
 export const defaultCategories: Category[] = [
   {
     name: ['Work'],
     rule: { type: 'regex', regex: 'Google Docs|libreoffice|ReText' },
-    data: { color: '#0F0', score: 10 },
+    data: { color: '#4ADE80', score: 10 },
   },
   {
     name: ['Work', 'Programming'],
@@ -100,17 +122,17 @@ export const defaultCategories: Category[] = [
   {
     name: ['Media'],
     rule: { type: 'none' },
-    data: { color: '#F33' },
+    data: { color: '#F87171' },
   },
   {
     name: ['Media', 'Games'],
     rule: { type: 'regex', regex: 'Minecraft|RimWorld' },
-    data: { color: '#F80' },
+    data: { color: '#FB923C' },
   },
   {
     name: ['Media', 'Video'],
     rule: { type: 'regex', regex: 'YouTube|Plex|VLC' },
-    data: { color: '#F33' },
+    data: { color: '#F87171' },
   },
   {
     name: ['Media', 'Social Media'],
@@ -119,7 +141,7 @@ export const defaultCategories: Category[] = [
       regex: 'reddit|Facebook|Twitter|Instagram|devRant',
       ignore_case: true,
     },
-    data: { color: '#FCC400' },
+    data: { color: '#FACC15' },
   },
   {
     name: ['Media', 'Music'],
@@ -128,12 +150,12 @@ export const defaultCategories: Category[] = [
       regex: 'Spotify|Deezer',
       ignore_case: true,
     },
-    data: { color: '#A8FC00' },
+    data: { color: '#A3E635' },
   },
   {
     name: ['Comms'],
     rule: { type: 'none' },
-    data: { color: '#9FF' },
+    data: { color: '#67E8F9' },
   },
   {
     name: ['Comms', 'IM'],
@@ -275,7 +297,8 @@ export function cleanCategory(cat: Category): Category {
 
 export function loadClasses(): Category[] {
   const settingsStore = useSettingsStore();
-  return settingsStore.classes;
+  const classes = settingsStore.classes;
+  return classes ? migrateLegacyDefaultColors(classes) : classes;
 }
 
 /**
@@ -289,9 +312,11 @@ export function saveCategories(sets: CategorySet[], activeIds: string[]) {
   }
   const settingsStore = useSettingsStore();
   const cleanSets = sets.map(s => ({ ...s, categories: s.categories.map(cleanCategory) }));
-  const effectiveClasses = mergeCategorySets(sets.filter(s => activeIds.includes(s.id))).map(
-    cleanCategory
-  );
+  // Merge in active_set_ids priority order (first = highest), matching the store.
+  const orderedSets = activeIds
+    .map(id => sets.find(s => s.id === id))
+    .filter((s): s is CategorySet => !!s);
+  const effectiveClasses = mergeCategorySets(orderedSets).map(cleanCategory);
   return settingsStore.update({
     category_sets: cleanSets,
     active_set_ids: activeIds,
@@ -300,13 +325,116 @@ export function saveCategories(sets: CategorySet[], activeIds: string[]) {
 }
 
 /**
+ * True when `classes` is still an install default, not a user taxonomy.
+ *
+ * Used to tell "the user never configured categories" apart from a real edit.
+ * Names and rules must match an install default. A missing `data.color` is
+ * still unconfigured (so a later palette on the shipped preset does not look
+ * like user data); a *different* color is a customization and is kept.
+ */
+function categoryNameKey(c: Category): string {
+  return c.name.join('>');
+}
+
+function ruleSignature(c: Category): string {
+  return JSON.stringify([
+    // `null` and `'none'` are the same rule type after cleanCategory
+    c.rule?.type === 'regex' ? 'regex' : 'none',
+    c.rule?.type === 'regex' ? c.rule?.regex ?? null : null,
+    Boolean(c.rule?.ignore_case),
+    c.rule?.select_keys ?? null,
+    c.rule?.priority ?? c.rule?.weight ?? null,
+  ]);
+}
+
+function categoryColor(c: Category): string | null {
+  const color = c.data && c.data.color;
+  return typeof color === 'string' && color.length > 0 ? color : null;
+}
+
+function isLegacyDefaultColor(c: Category): boolean {
+  const legacy = LEGACY_DEFAULT_COLORS.get(categoryNameKey(c));
+  const color = categoryColor(c);
+  return legacy !== undefined && color !== null && color.toUpperCase() === legacy.toUpperCase();
+}
+
+/** Show stored legacy default colors in the current default color; keep all other colors. */
+export function migrateLegacyDefaultColors(classes: Category[]): Category[] {
+  return classes.map(c => {
+    if (!isLegacyDefaultColor(c)) return c;
+    const ref = defaultCategories.find(d => categoryNameKey(d) === categoryNameKey(c));
+    const color = ref && categoryColor(ref);
+    return color ? { ...c, data: { ...c.data, color } } : c;
+  });
+}
+
+/**
+ * True when `stored` is the same taxonomy as `reference`, allowing a missing
+ * color (install default, or a later palette on the preset) but not a color
+ * the user actually changed.
+ *
+ * Score: only an explicitly set stored score that differs from the reference
+ * is treated as a user customization.  A missing/undefined stored score is
+ * indistinguishable from legacy data (categories persisted before scores were
+ * introduced) and is therefore treated as an install default, not a user edit.
+ * This means "Inherit parent score" (stores undefined) does not prevent preset
+ * activation — an acceptable trade-off given the ambiguity.
+ *
+ * Duplicate stored names are treated as user edits (one-to-one name matching
+ * is required, mirroring the uniqueness check on the reference side).
+ */
+function matchesInstallDefault(
+  stored: Category[],
+  reference: Category[],
+  allowLegacyColors = false
+): boolean {
+  if (stored.length !== reference.length) return false;
+  const refByName = new Map(reference.map(c => [categoryNameKey(c), c]));
+  if (refByName.size !== reference.length) return false;
+  // Require one-to-one name matching: duplicates in stored would let a renamed/
+  // deleted category slip through as "matching" by piggy-backing on a sibling.
+  const storedNames = stored.map(c => categoryNameKey(c));
+  if (new Set(storedNames).size !== stored.length) return false;
+  for (const cat of stored) {
+    const ref = refByName.get(categoryNameKey(cat));
+    if (!ref) return false;
+    if (ruleSignature(cat) !== ruleSignature(ref)) return false;
+    const storedColor = categoryColor(cat);
+    if (
+      storedColor !== null &&
+      storedColor !== categoryColor(ref) &&
+      !(allowLegacyColors && isLegacyDefaultColor(cat))
+    )
+      return false;
+    // Only treat score as a user edit if it is explicitly set to a different
+    // value.  A missing/undefined stored score is indistinguishable from legacy
+    // data (persisted before scores existed), so we do not block on it.
+    const storedScore = cat.data?.score;
+    if (storedScore !== undefined && storedScore !== ref.data?.score) return false;
+  }
+  return true;
+}
+
+export function classesLookUnconfigured(classes: Category[] | undefined | null): boolean {
+  // Empty array is a deliberate "no categories" save, not an install default.
+  if (classes == null) return true;
+  if (classes.length === 0) return false;
+  if (matchesInstallDefault(classes, defaultCategories, true)) return true;
+  return getPresetCategorySets().some(p => matchesInstallDefault(classes, p.categories));
+}
+
+/**
  * Load category sets and active set IDs from the settings store.
  * Falls back to the legacy flat `classes` setting if no sets are defined yet.
  *
  * Preset sets shipped by the build/deployment (see `~/util/presetCategories`)
  * are always appended as *available* sets, but are only active by default when
- * the user has no stored categorization of their own. A stored set with the
- * same id always wins over the preset definition, so user edits stick.
+ * the user has no stored categorization of their own. Persisted *install
+ * defaults* (the stock `classes` list, or a copy of a shipped preset) do not
+ * count — `settings.save()` writes every key, so a theme/view save on first
+ * run used to look like a user taxonomy and let `default` silently win over
+ * the preset (ActivityWatch/activitywatch#1439). A stored set with the same
+ * id always wins over the preset definition, so user edits stick.
  */
 export function loadCategories(): { sets: CategorySet[]; activeIds: string[] } {
   const settingsStore = useSettingsStore();
@@ -317,11 +445,20 @@ export function loadCategories(): { sets: CategorySet[]; activeIds: string[] } {
   let sets: CategorySet[];
   let activeIds: string[];
 
-  if (storedSets && storedSets.length > 0) {
-    sets = [...storedSets];
+  const storedOwnSets = Boolean(storedSets && storedSets.length > 0);
+  // `hasStoredCategories` is true as soon as `classes` exists in storage,
+  // which first-run `settings.save()` always writes. Only a *custom* class
+  // list should suppress the shipped preset.
+  const storedCustomClasses =
+    settingsStore.hasStoredCategories &&
+    !storedOwnSets &&
+    !classesLookUnconfigured(settingsStore.classes);
+
+  if (storedOwnSets) {
+    sets = storedSets.map(s => ({ ...s, categories: migrateLegacyDefaultColors(s.categories) }));
     activeIds =
       storedActiveIds && storedActiveIds.length > 0 ? [...storedActiveIds] : [storedSets[0].id];
-  } else if (presets.length > 0 && !settingsStore.hasStoredCategories) {
+  } else if (presets.length > 0 && !storedCustomClasses) {
     // First run on a build that ships presets: activate the first preset only.
     //
     // We deliberately limit the initial selection to one set: syncToPrimarySet()
@@ -337,7 +474,7 @@ export function loadCategories(): { sets: CategorySet[]; activeIds: string[] } {
   } else {
     // Migration path: no sets defined yet — wrap the existing flat classes into a "default" set
     const legacyClasses = settingsStore.classes || defaultCategories;
-    sets = [{ id: DEFAULT_SET_ID, categories: legacyClasses }];
+    sets = [{ id: DEFAULT_SET_ID, categories: migrateLegacyDefaultColors(legacyClasses) }];
     activeIds = [DEFAULT_SET_ID];
   }
 
@@ -361,8 +498,29 @@ export function loadCategories(): { sets: CategorySet[]; activeIds: string[] } {
   return { sets, activeIds };
 }
 
-function pickDeepest(categories: Category[]) {
-  return _.maxBy(categories, c => c.name.length);
+function categoryRank(category: Category): number {
+  const explicit = category.rule.priority ?? category.rule.weight;
+  if (typeof explicit === 'number' && Number.isInteger(explicit)) {
+    return explicit;
+  }
+  return category.name.length * 10;
+}
+
+/**
+ * True if the category has a regex rule that can actually match.
+ *
+ * A blank regex would match every string, so it is treated as "no rule", the
+ * same as aw-core's server-side categorize() does. Without this, views that
+ * classify client-side (Top Applications, Top Window Titles) put everything
+ * into a blank-regex category while server-categorized views (Sunburst,
+ * Timeline, Top Categories) ignore it (#382).
+ */
+export function hasMatchableRegex(c: Category): boolean {
+  return c.rule.type == 'regex' && !!c.rule.regex;
+}
+
+function pickHighestRanked(categories: Category[]) {
+  return _.maxBy(categories, categoryRank);
 }
 
 export function matchString(
@@ -378,16 +536,14 @@ export function matchString(
   }
 
   // Compile regexes
-  const regexes: [Category, RegExp][] = categories
-    .filter(c => c.rule.type == 'regex')
-    .map(c => {
-      // using 'm' flag to make `$` and `^` in rules work
-      const re = RegExp(c.rule.regex, (c.rule.ignore_case ? 'i' : '') + 'm');
-      return [c, re];
-    });
+  const regexes: [Category, RegExp][] = categories.filter(hasMatchableRegex).map(c => {
+    // using 'm' flag to make `$` and `^` in rules work
+    const re = RegExp(c.rule.regex, (c.rule.ignore_case ? 'i' : '') + 'm');
+    return [c, re];
+  });
 
   // Find the matching category.
-  // If several categories match the event, the deepest category will be chosen.
+  // If several categories match, explicit priority wins; otherwise depth wins.
   const matchingCats: [Category, RegExp][] = regexes.filter(([category, re]) => {
     const selectKeys = normalizeSelectKeys(category.rule.select_keys);
     if (event && selectKeys) {
@@ -399,19 +555,17 @@ export function matchString(
     return re.test(str);
   });
   if (matchingCats.length > 0) {
-    return pickDeepest(matchingCats.map(c => c[0]));
+    return pickHighestRanked(matchingCats.map(c => c[0]));
   }
   return null;
 }
 
 // this is used only in tests
 export function classifyEvents(events: IEvent[], categories: Category[]): IEvent[] {
-  const regexes: [Category, RegExp][] = categories
-    .filter(c => c.rule.type == 'regex')
-    .map(c => {
-      const re = RegExp(c.rule.regex, c.rule.ignore_case ? 'i' : '');
-      return [c, re];
-    });
+  const regexes: [Category, RegExp][] = categories.filter(hasMatchableRegex).map(c => {
+    const re = RegExp(c.rule.regex, c.rule.ignore_case ? 'i' : '');
+    return [c, re];
+  });
 
   return events.map((e: IEvent) => {
     const matchingCats = regexes.filter(([category, re]) => {
@@ -423,7 +577,7 @@ export function classifyEvents(events: IEvent[], categories: Category[]): IEvent
     });
     e.data.$category =
       matchingCats.length > 0
-        ? pickDeepest(matchingCats.map(([category]) => category)).name
+        ? pickHighestRanked(matchingCats.map(([category]) => category)).name
         : UNCATEGORIZED;
     return e;
   });

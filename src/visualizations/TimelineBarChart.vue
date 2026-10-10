@@ -1,7 +1,7 @@
 <template lang="pug">
 div(v-if="datasets && datasets.length > 0")
   // Height set here to avoid elements jumping when loading Activity view
-  bar(:chart-data="chartData" :chart-options="chartOptions" :height="330")
+  bar(:chart-data="chartData" :chart-options="chartOptions" :height="height")
 div.small(v-else-if="datasets === null", style="font-size: 16pt; color: #aaa;")
   | No data
 div.small(v-else, style="font-size: 16pt; color: #aaa;")
@@ -10,25 +10,18 @@ div.small(v-else, style="font-size: 16pt; color: #aaa;")
 
 <script lang="ts">
 import _ from 'lodash';
-import {
-  Chart,
-  BarController,
-  BarElement,
-  CategoryScale,
-  LinearScale,
-  Legend,
-  Tooltip,
-  ChartOptions,
-} from 'chart.js';
+import { ChartOptions } from 'chart.js';
+import 'chart.js/auto';
 import { Bar } from 'vue-chartjs/legacy';
-
-Chart.register(BarController, BarElement, CategoryScale, LinearScale, Legend, Tooltip);
 import {
-  format_day_of_month,
+  format_date_short,
   format_weekday_short,
   get_hour_offset,
   get_short_month_labels,
 } from '~/util/time';
+import { MAX_DAILY_BUCKETS, timeperiodsCalendarMonthsOfPeriod } from '~/util/timeperiod';
+import { i18n } from '~/i18n';
+import { clampStackedHours } from '~/util/timelineClamp';
 
 function hourToTick(hours: number): string {
   if (hours > 1) {
@@ -54,7 +47,7 @@ export default {
         {
           label: 'Total time',
           backgroundColor: '#6699ff',
-          data: Array.from({ length: 40 }, (_, index) => (index % 8) + 1),
+          data: Array.from({ length: 40 }, () => Math.floor(Math.random() * 40)),
         },
       ],
     },
@@ -66,6 +59,17 @@ export default {
       type: Array,
       default: () => [1, 'day'],
     },
+    // Only the single-day hourly activity view should trim overlapping stacks.
+    // Other callers (Trends, Report, multi-day Activity) reuse the default
+    // `[1, 'day']` timeperiod but pass per-day values, which must not be clamped.
+    clamp_hourly: {
+      type: Boolean,
+      default: false,
+    },
+    height: {
+      type: Number,
+      default: 330,
+    },
   },
   computed: {
     labels() {
@@ -74,8 +78,20 @@ export default {
       if (resolution.startsWith('day') && count == 1) {
         const hourOffset = get_hour_offset();
         return _.range(0, 24).map(h => `${(h + hourOffset) % 24}`);
+      } else if (resolution.startsWith('day') && count > MAX_DAILY_BUCKETS) {
+        // Long custom ranges are bucketed by calendar month (see timeperiodsForBarchart)
+        const fmt = new Intl.DateTimeFormat(i18n.locale, { month: 'short', year: 'numeric' });
+        return timeperiodsCalendarMonthsOfPeriod({
+          start,
+          length: [count, resolution],
+        }).map(p => fmt.format(new Date(p.start)));
       } else if (resolution.startsWith('day')) {
-        return _.range(count).map(d => `${d + 1}`);
+        return _.range(count).map(d => {
+          const date = new Date(start);
+          date.setHours(12, 0, 0, 0);
+          date.setDate(date.getDate() + d);
+          return format_date_short(date, i18n.locale);
+        });
       } else if (resolution.startsWith('week')) {
         // Look up days of the week from `start`
         return _.range(7).map(d => {
@@ -85,12 +101,11 @@ export default {
           return format_weekday_short(date);
         });
       } else if (resolution.startsWith('month')) {
-        // FIXME: Needs access to the timeperiod start to know which month
         // How many days are in the given month?
         const date = new Date(start);
         const daysInMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
         return _.range(1, daysInMonth + 1).map(d =>
-          format_day_of_month(new Date(date.getFullYear(), date.getMonth(), d, 12))
+          format_date_short(new Date(date.getFullYear(), date.getMonth(), d, 12))
         );
       } else if (resolution == 'year') {
         return get_short_month_labels();
@@ -100,22 +115,26 @@ export default {
       }
     },
     chartData() {
+      let datasets = _.sortBy(this.datasets, d => d.label);
+      const [count, resolution] = this.timeperiod_length;
+      if (this.clamp_hourly && resolution.startsWith('day') && count == 1) {
+        datasets = clampStackedHours(datasets);
+      }
       return {
         labels: this.labels,
-        datasets: this.datasets
-          .slice()
-          .sort((a, b) => String(a.label || '').localeCompare(String(b.label || ''))),
+        datasets,
         title: {
           display: true,
           text: 'Timeline',
         },
-        responsive: true,
-        maintainAspectRatio: false,
       };
     },
     chartOptions(): ChartOptions {
-      const resolution = this.timeperiod_length[1];
+      const [count, resolution] = this.timeperiod_length;
+      const singleDay = resolution.startsWith('day') && count === 1;
       return {
+        responsive: true,
+        maintainAspectRatio: false,
         plugins: {
           tooltip: {
             mode: 'point',
@@ -129,12 +148,8 @@ export default {
                   minutes = 0;
                   hours += 1;
                 }
-                const dur =
-                  hours > 0 ? `${hours}h ${minutes.toString().padStart(2, '0')}m` : `${minutes}m`;
-                // dataset.label is the category name; without it the tooltip
-                // only showed a colored box + duration.
-                const label = context.dataset.label || '';
-                return `${label}: ${dur}`;
+                const minutes_str = minutes.toString().padStart(2, '0');
+                return `${hours}:${minutes_str}`;
               },
             },
           },
@@ -149,10 +164,10 @@ export default {
           y: {
             stacked: true,
             min: 0,
-            suggestedMax: resolution.startsWith('day') ? 1 : undefined,
+            suggestedMax: singleDay ? 1 : undefined,
             ticks: {
               callback: hourToTick,
-              stepSize: resolution.startsWith('day') ? 0.25 : 1,
+              stepSize: singleDay ? 0.25 : undefined,
             },
           },
         },

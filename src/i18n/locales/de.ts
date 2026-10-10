@@ -146,6 +146,9 @@ export default {
       discard: 'Verwerfen',
       addCategory: 'Kategorie hinzufügen',
       categories: 'Kategorien',
+      priority: 'Priorität',
+      priorityDefault: 'Standard',
+      priorityInteger: 'Die Priorität muss eine ganze Zahl sein.',
       builderTitle: 'Kategorie-Builder',
       builderSubtitle: 'Regeln aus unkategorisierter Aktivität erzeugen',
       openBuilder: 'Builder öffnen',
@@ -158,12 +161,6 @@ export default {
         'Diese Einstellungen sind für Entwickler gedacht und können unerwartet etwas kaputt machen.',
       forceDevmode: 'Devmode erzwingen',
       forceDevmodeHelp: 'Devmode aktiviert noch unfertige Funktionen.',
-      showYearly: 'Jahreszeitraum anzeigen',
-      showYearlyHelp:
-        'Eine Abfrage über ein ganzes Jahr ist sehr schwer und führt oft zu Timeouts. Mit aw-server-rust kann es schneller sein.',
-      multidevice: 'Multi-Device-Abfrage',
-      multideviceHelp:
-        'Frühes Experiment: Ereignisse von mehreren Hosts in der Aktivitätsansicht. Browser-Buckets und „Audio = aktiv“ werden noch nicht unterstützt.',
       requestTimeout: 'Anfrage-Timeout',
       requestTimeoutHelp:
         'Maximale Wartezeit auf Serverantwort. Für große Abfragen erhöhen. Web-UI neu laden, damit es wirkt.',
@@ -242,6 +239,8 @@ export default {
     bucketsToDelete: 'Buckets, die gelöscht werden:',
     deleting: 'Wird gelöscht…',
     importing: 'Importiere…',
+    importSuccess: 'Import erfolgreich abgeschlossen!',
+    importFailedGeneric: 'Import fehlgeschlagen, siehe aw-server-Logs für weitere Informationen',
     importHelpNew:
       'JSON-Datei aus einem oder mehreren Buckets. Der Import schlägt fehl, wenn bereits ein Bucket mit derselben ID existiert.',
     exportHelp: 'Alle Buckets auf diesem Server als eine JSON-Datei herunterladen. Für Backups.',
@@ -268,9 +267,19 @@ export default {
   },
   activity: {
     title: 'Aktivität',
+    browserAllowlistMiss:
+      'Für diesen Zeitraum wurde kein passendes Browserfenster gefunden. Falls Sie in einem Chromium-/Firefox-Derivat gesurft haben, wird dessen App-Name möglicherweise noch nicht erkannt.',
     for: 'für',
     host: 'Host:',
+    devices: 'Geräte:',
+    allDevices: 'Alle Geräte',
+    allDevicesCount: 'Alle Geräte ({count})',
+    onlyThisDevice: 'nur',
+    multideviceNote:
+      'Browser- und Stoppuhrdaten sind nur bei Auswahl eines einzelnen Geräts verfügbar.',
     timeActive: 'Aktive Zeit:',
+    timeActiveTooltip:
+      'Active window time in the queried range, after the filters below. The bars in the period chart show raw device active time, so they can be slightly higher.',
     queryRange: 'Abfragezeitraum:',
     filters: 'Filter',
     filtersTitle: 'Filter',
@@ -288,6 +297,12 @@ export default {
     periodLast30d: '30 Tage',
     periodLast7dTitle: 'letzte 7 Tage',
     periodLast30dTitle: 'letzte 30 Tage',
+    periodCustomRange: 'benutzerdefinierter Zeitraum',
+    rangeStart: 'Startdatum',
+    rangeEnd: 'Enddatum',
+    invalidRange: 'Ungültiger Zeitraum in der URL, stattdessen wird heute angezeigt.',
+    periodAllTime: 'gesamter Zeitraum',
+    allTimeSlowHint: 'Der gesamte Zeitraum kann bei großen Datenbanken eine Weile dauern.',
     filterAfkTooltip: 'Zeit ausblenden, in der der AFK-Watcher keine Eingabe erkannt hat.',
     filterAudibleTooltip:
       'Aktives Fenster mit hörbarem Browser-Tab als aktiv zählen. Erfordert Browser-Watcher.',
@@ -331,6 +346,8 @@ export default {
     periodThisYear: 'dieses Jahr',
     periodLast7d: 'die letzten 7 Tage',
     periodLast30d: 'die letzten 30 Tage',
+    periodCustomRange: 'im gewählten Zeitraum',
+    periodAllTime: 'insgesamt',
   },
   visualizations: {
     noData: '(keine Daten)',

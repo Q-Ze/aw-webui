@@ -66,12 +66,7 @@ export default {
         const categoryStore = useCategoryStore();
 
         // Host selection mirrors the multidevice logic in the activity store.
-        let hosts: string[] = [];
-        if (settingsStore.useMultidevice) {
-          hosts = bucketsStore.hosts.filter(h => h && !h.startsWith('fakedata'));
-        } else {
-          hosts = [bucketsStore.hosts.find(h => h) || ''];
-        }
+        const hosts: string[] = bucketsStore.hosts.filter(h => h && !h.startsWith('fakedata'));
         const { host_params, hosts_with_buckets } = buildMultideviceHostParams(
           hosts,
           h => bucketsStore.bucketsWindow(h),

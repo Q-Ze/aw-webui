@@ -1,6 +1,6 @@
 <template lang="pug">
 // The category edit modal
-b-modal(id="edit" ref="edit" title="Edit category" @show="resetModal" @hidden="hidden" @ok="handleOk" @keydown.native.enter="handleEnter" :ok-disabled="editing.rule.type === 'regex' && !validPattern")
+b-modal(id="edit" ref="edit" title="Edit category" @show="resetModal" @hidden="hidden" @ok="handleOk" @keydown.native.enter="handleEnter" :ok-disabled="!canSubmit")
   div.my-1
     b-input-group.my-1(prepend="Name")
       b-form-input(v-model="editing.name")
@@ -34,6 +34,16 @@ b-modal(id="edit" ref="edit" title="Edit category" @show="resetModal" @hidden="h
             :value="key"
           ) {{ key }}
         small.text-muted Leave blank to match every string field (default).
+      b-input-group.my-1(:prepend="$t('settings.categorization.priority')")
+        b-form-input(
+          v-model="editing.priority"
+          type="number"
+          step="1"
+          :placeholder="$t('settings.categorization.priorityDefault')"
+          :state="priorityState"
+        )
+      small.text-danger(v-if="!validPriority")
+        | {{ $t('settings.categorization.priorityInteger') }}
 
   hr
   div.my-1
@@ -91,6 +101,7 @@ export default {
         inherit_score: true,
         score: null,
         match_fields: [],
+        priority: null,
       },
     };
   },
@@ -106,13 +117,35 @@ export default {
       ];
     },
     valid: function () {
-      return this.editing.rule.type !== 'none' && this.validPattern;
+      return this.canSubmit;
+    },
+    canSubmit: function () {
+      if (this.editing.rule.type === 'regex') {
+        return this.validPattern && this.validPriority;
+      }
+      return true;
     },
     validPattern: function () {
       return this.editing.rule.type === 'regex' && validateRegex(this.editing.rule.regex || '');
     },
     broad_pattern: function () {
       return this.editing.rule.type === 'regex' && isRegexBroad(this.editing.rule.regex || '');
+    },
+    validPriority: function () {
+      if (this.editing.rule.type !== 'regex') {
+        return true;
+      }
+      return this.priorityFromInput(this.editing.priority) !== undefined;
+    },
+    priorityState: function () {
+      if (
+        this.editing.priority === null ||
+        this.editing.priority === undefined ||
+        this.editing.priority === ''
+      ) {
+        return null;
+      }
+      return this.validPriority;
     },
     fieldOptions: function () {
       const extra = (this.editing.match_fields || []).filter(
@@ -135,7 +168,7 @@ export default {
   },
   methods: {
     showModal() {
-      this.$refs.edit.show();
+      this.$refs.edit?.show();
     },
     hidden() {
       this.$emit('hidden');
@@ -146,6 +179,9 @@ export default {
       this.categoryStore.removeClass(this.categoryId);
     },
     checkFormValidity() {
+      if (this.editing.rule.type === 'regex' && !this.validPriority) {
+        return false;
+      }
       if (this.editing.rule.type === 'regex') {
         return this.validPattern;
       }
@@ -160,7 +196,7 @@ export default {
         return;
       }
       // Mirrors the :ok-disabled condition on the modal
-      if (this.editing.rule.type === 'regex' && !this.validPattern) {
+      if (!this.canSubmit) {
         return;
       }
       event.preventDefault();
@@ -204,8 +240,17 @@ export default {
         } else {
           rule.select_keys = selected;
         }
+        const priority = this.priorityFromInput(this.editing.priority);
+        delete rule.weight;
+        if (priority === null) {
+          delete rule.priority;
+        } else {
+          rule.priority = priority;
+        }
       } else {
         delete rule.select_keys;
+        delete rule.priority;
+        delete rule.weight;
       }
       const new_class = {
         id: this.editing.id,
@@ -218,9 +263,10 @@ export default {
       };
       this.categoryStore.updateClass(new_class);
 
-      // Hide the modal manually
+      // Hide the modal manually. Saving a rename or reparent re-renders the category
+      // tree, which may destroy this component before the tick (activitywatch#1144).
       this.$nextTick(() => {
-        this.$refs.edit.hide();
+        this.$refs.edit?.hide();
       });
     },
     resetModal() {
@@ -241,7 +287,22 @@ export default {
         score,
         inherit_score,
         match_fields: storedKeys ? [...storedKeys] : [],
+        priority: this.priorityFromRule(rule),
       };
+    },
+    priorityFromInput(value) {
+      if (value === null || value === undefined || value === '') {
+        return null;
+      }
+      if (typeof value === 'string' && value.trim() === '') {
+        return null;
+      }
+      const priority = Number(value);
+      return Number.isInteger(priority) ? priority : undefined;
+    },
+    priorityFromRule(rule) {
+      const value = rule.priority !== undefined ? rule.priority : rule.weight;
+      return typeof value === 'number' && Number.isInteger(value) ? value : null;
     },
   },
 };

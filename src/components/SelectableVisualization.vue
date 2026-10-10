@@ -26,7 +26,7 @@ div.vis-card(:class="{'vis-card--editable': editable}", v-if="editable || !activ
     div(v-if="type == 'top_apps'")
       aw-summary(:fields="activityStore.window.top_apps",
                  :namefunc="e => e.data.app",
-                 :colorfunc="e => e.data.app",
+                 :colorfunc="e => e.data['$category'] || e.data.app",
                  with_limit)
     div(v-if="type == 'top_titles' && !activityStore.android.available")
       aw-summary(:fields="activityStore.window.top_titles",
@@ -38,6 +38,9 @@ div.vis-card(:class="{'vis-card--editable': editable}", v-if="editable || !activ
                  :namefunc="e => e.data.classname",
                  :colorfunc="e => e.data.app",
                  with_limit)
+    b-alert.small.px-2.py-1(v-if="isBrowserVis && browserAllowlistMiss" show variant="info")
+      | {{ $t('activity.browserAllowlistMiss') }}
+      |  (#[a(href="https://github.com/ActivityWatch/aw-webui/issues/927") #927])
     div(v-if="type == 'top_domains'")
       aw-summary(:fields="activityStore.browser.top_domains",
                  :namefunc="e => e.data.$domain",
@@ -111,7 +114,7 @@ div.vis-card(:class="{'vis-card--editable': editable}", v-if="editable || !activ
     div(v-if="type == 'category_sunburst'")
       aw-sunburst-categories(:data="top_categories_hierarchy", style="height: 20em")
     div(v-if="type == 'timeline_barchart'")
-      aw-timeline-barchart(:datasets="datasets", :timeperiod_start="activityStore.query_options.timeperiod.start", :timeperiod_length="activityStore.query_options.timeperiod.length", style="height: 100")
+      aw-timeline-barchart(:datasets="datasets", :timeperiod_start="activityStore.query_options.timeperiod.start", :timeperiod_length="activityStore.query_options.timeperiod.length", :clamp_hourly="true", style="height: 100")
     div(v-if="type == 'sunburst_clock'")
       aw-sunburst-clock(:date="date", :afkBucketId="activityStore.buckets.afk[0]", :windowBucketId="activityStore.buckets.window[0]")
     div(v-if="type == 'custom_vis'")
@@ -162,6 +165,7 @@ import { useCategoryStore } from '~/stores/categories';
 import { useBucketsStore } from '~/stores/buckets';
 import { useViewsStore } from '~/stores/views';
 import { useSettingsStore } from '~/stores/settings';
+import { isBrowserAllowlistMiss } from '~/util/browserAllowlist';
 
 import moment from 'moment';
 
@@ -351,6 +355,12 @@ export default {
     },
     has_prerequisites() {
       return this.visualizations[this.type].available;
+    },
+    isBrowserVis() {
+      return ['top_domains', 'top_urls', 'top_browser_titles'].includes(this.type);
+    },
+    browserAllowlistMiss() {
+      return isBrowserAllowlistMiss(this.activityStore.browser);
     },
     supports_period: function () {
       if (this.type == 'sunburst_clock' || this.type == 'vis_timeline') {

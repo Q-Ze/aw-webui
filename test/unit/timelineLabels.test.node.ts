@@ -38,9 +38,32 @@ describe('formatTimelineBucketLabelHtml', () => {
     );
   });
 
-  it('abbreviates synced bucket names', () => {
+  it('shortens synced bucket names to "short @ remote-host" format', () => {
+    // Previously rendered as "aw-watcher-window (synced from remote-host)"
+    // — now consistent with local format: "window @ remote-host"
     expect(formatTimelineBucketLabelHtml('aw-watcher-window_host-synced-from-remote-host')).toBe(
-      '<span class="timeline-label" title="aw-watcher-window_host-synced-from-remote-host">aw-​watcher-​window (synced from remote-​host)</span>'
+      '<span class="timeline-label" title="aw-watcher-window_host-synced-from-remote-host">window @ remote-​host</span>'
+    );
+    expect(formatTimelineBucketLabelHtml('aw-watcher-afk_laptop-synced-from-desktop')).toBe(
+      '<span class="timeline-label" title="aw-watcher-afk_laptop-synced-from-desktop">afk @ desktop</span>'
+    );
+  });
+
+  it('disambiguates local buckets with hostname option', () => {
+    expect(
+      formatTimelineBucketLabelHtml('aw-watcher-afk_work-macbook', { hostname: 'work-macbook' })
+    ).toBe(
+      '<span class="timeline-label" title="aw-watcher-afk_work-macbook">afk @ work-​macbook</span>'
+    );
+  });
+
+  it('preserves underscores in origin hostname for synced buckets', () => {
+    // Regression for https://github.com/ActivityWatch/aw-webui/issues/967:
+    // 'aw-watcher-android-synced-from-my_phone' was rendering as
+    // 'android-synced-from-my' because the old underscore-split regex consumed
+    // 'my_phone' as the host separator, leaving no '-synced-from-' to match.
+    expect(formatTimelineBucketLabelHtml('aw-watcher-android-synced-from-my_phone')).toBe(
+      '<span class="timeline-label" title="aw-watcher-android-synced-from-my_phone">android @ my_​phone</span>'
     );
   });
 

@@ -53,11 +53,7 @@ export default {
           .filter(h => h && !h.startsWith('fakedata'))
           .map(h => bucketsStore.bucketsAFK(h))
       );
-      if (settingsStore.useMultidevice) {
-        afk_buckets = allAfkBuckets;
-      } else {
-        afk_buckets = [allAfkBuckets[0]];
-      }
+      afk_buckets = allAfkBuckets;
       afk_buckets = afk_buckets.filter(Boolean);
       if (afk_buckets.length === 0) {
         this.error = 'no AFK bucket found';

@@ -13,7 +13,7 @@ div
       ) {{ opt.text }}
 
     b-form-select.mr-2.mb-1(
-      v-if="bucketsStore.hosts.length > 1"
+      v-if="bucketsStore.knownHosts.length > 1"
       size="sm"
       :value="host"
       :options="hostOptions"
@@ -56,7 +56,7 @@ div
           div.small.text-muted.mt-1(v-if="busiestDay") {{ busiestDay.duration | friendlyduration }} on this day
 
     h5.mt-3 Time per day
-    aw-timeline-barchart(:datasets="datasets" :height="100")
+    aw-timeline-barchart(:datasets="datasets" :height="100" :timeperiod_start="currentStart.toISOString()" :timeperiod_length="[periodDays, 'days']")
 
     h5.mt-4 Top changes by category
     p.small.text-muted(v-if="categoryTrends.length === 0")
@@ -65,6 +65,7 @@ div
       v-else
       small
       hover
+      responsive
       :items="categoryTrends"
       :fields="categoryFields"
       sort-by="absDelta"
@@ -135,9 +136,9 @@ export default {
 
       categoryFields: [
         { key: 'category', label: 'Category', sortable: true },
-        { key: 'current', label: 'Current', class: 'text-right', sortable: true },
-        { key: 'previous', label: 'Previous', class: 'text-right', sortable: true },
-        { key: 'delta', label: 'Change', class: 'text-right', sortable: true },
+        { key: 'current', label: 'Current', class: 'text-right text-nowrap', sortable: true },
+        { key: 'previous', label: 'Previous', class: 'text-right text-nowrap', sortable: true },
+        { key: 'delta', label: 'Change', class: 'text-right text-nowrap', sortable: true },
         { key: 'absDelta', label: '', class: 'd-none', sortable: true },
       ],
     };
@@ -145,11 +146,16 @@ export default {
 
   computed: {
     host(): string | undefined {
-      return this.$route.params.host || this.bucketsStore.hosts[0];
+      // Ignore a :host param that is no longer offered in the select (e.g. a
+      // stale /trends/unknown URL, or a device that disappeared). Otherwise the
+      // select is hidden and the user is stuck querying a host they cannot see.
+      const routeHost = this.$route.params.host;
+      const hosts = this.bucketsStore.knownHosts;
+      return routeHost && hosts.includes(routeHost) ? routeHost : hosts[0];
     },
 
     hostOptions(): { value: string; text: string }[] {
-      return this.bucketsStore.hosts.map(h => ({ value: h, text: h }));
+      return this.bucketsStore.knownHosts.map(h => ({ value: h, text: h }));
     },
 
     today(): string {
@@ -364,8 +370,7 @@ export default {
       const cats = this.categoryStore.classes_for_query;
       const code =
         canonicalEvents({
-          bid_window: 'aw-watcher-window_' + this.host,
-          bid_afk: 'aw-watcher-afk_' + this.host,
+          ...this.bucketsStore.desktopBucketIds(this.host),
           filter_afk: true,
           categories: cats,
           filter_categories: null,

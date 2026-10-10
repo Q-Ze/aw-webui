@@ -98,19 +98,14 @@ export function getCachedYearReport(year: number): YearReport | null {
 }
 
 function afkBucketsForQuery(): string[] {
+  // Upstream removed useMultidevice (replaced by device-selection UI);
+  // the annual report always aggregates across all hosts.
   const bucketsStore = useBucketsStore();
-  const settingsStore = useSettingsStore();
-  let afk: string[] = [];
-  if (settingsStore.useMultidevice) {
-    afk = _.flatten(
-      bucketsStore.hosts
-        .filter(h => h && !h.startsWith('fakedata'))
-        .map(h => bucketsStore.bucketsAFK(h))
-    );
-  } else {
-    afk = [bucketsStore.bucketsAFK(bucketsStore.hosts.find(h => h) || '')[0]];
-  }
-  return afk.filter(Boolean);
+  return _.flatten(
+    bucketsStore.hosts
+      .filter(h => h && !h.startsWith('fakedata'))
+      .map(h => bucketsStore.bucketsAFK(h))
+  ).filter(Boolean);
 }
 
 async function fetchYearDaily(year: number): Promise<Record<string, number>> {
@@ -218,6 +213,7 @@ async function fetchYearApps(year: number): Promise<[string, number][]> {
   const q: string[] = [];
   hosts_with_buckets.forEach(host => {
     const p = host_params[host];
+    if (!('bid_window' in p)) return;
     const suffix = host.replace(/[^a-zA-Z0-9_]/g, '');
     q.push(`events_${suffix} = flood(query_bucket("${p.bid_window}"));`);
     q.push(`not_afk_${suffix} = flood(query_bucket("${p.bid_afk}"));`);
@@ -464,6 +460,7 @@ async function fetchBusiestWhat(
   const q: string[] = [];
   hosts_with_buckets.forEach(host => {
     const p = host_params[host];
+    if (!('bid_window' in p)) return;
     const suffix = host.replace(/[^a-zA-Z0-9_]/g, '');
     q.push(`events_${suffix} = flood(query_bucket("${p.bid_window}"));`);
     q.push(`not_afk_${suffix} = flood(query_bucket("${p.bid_afk}"));`);

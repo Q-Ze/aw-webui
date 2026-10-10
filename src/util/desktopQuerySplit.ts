@@ -2,12 +2,19 @@ import moment from 'moment';
 
 import { default_limit as DESKTOP_QUERY_EVENT_LIMIT } from '~/queries';
 import { IEvent } from '~/util/interfaces';
-import { TimePeriod, timeperiodToStr, timeperiodsDaysOfPeriod } from '~/util/timeperiod';
+import {
+  TimePeriod,
+  timeperiodToStr,
+  timeperiodsCalendarMonthsOfPeriod,
+  timeperiodsDaysOfPeriod,
+} from '~/util/timeperiod';
 
 export { DESKTOP_QUERY_EVENT_LIMIT };
 
 export interface WindowQueryResult {
   app_events?: IEvent[];
+  // Per-app durations split by category, for coloring Top Applications
+  app_cat_events?: IEvent[];
   title_events?: IEvent[];
   cat_events?: IEvent[];
   active_events?: IEvent[];
@@ -56,7 +63,15 @@ export interface FullDesktopQueryResult {
  * A single day stays one request. Week, month, and multi-day ranges split
  * into days. A year is also split into days: month-sized chunks are the
  * timeout. Future-starting periods are dropped so we don't query incomplete days.
+ *
+ * Long custom ranges (monthly barchart buckets) are split into days too. Days
+ * never cross a calendar month, so their cat_events are summed into the
+ * monthly barchart without a second round of month-sized category queries
+ * (see categoryByPeriodFromChunks). Week-sized chunks were tried on a 1.7 GB
+ * aw-server v0.14 database (2026-09-26): no faster overall, and single
+ * requests reached 20 s, too close to the 30 s timeout.
  */
+
 export function periodsForFullDesktopQuery(
   timeperiod: TimePeriod,
   now: Date = new Date()
@@ -110,6 +125,32 @@ export function mergeEventsByKeys(events: IEvent[], keys: string[], limit?: numb
   return limit === undefined ? merged : merged.slice(0, limit);
 }
 
+/**
+ * Category-by-period data for the monthly barchart, built from the results of
+ * the chunked desktop query (chunks never cross a calendar month) instead of
+ * querying each month again.
+ */
+export function categoryByPeriodFromChunks(
+  timeperiod: TimePeriod,
+  chunks: [string, FullDesktopQueryResult][]
+): Record<string, { cat_events: IEvent[] }> {
+  const byPeriod: Record<string, { cat_events: IEvent[] }> = {};
+  const now = new Date();
+  for (const month of timeperiodsCalendarMonthsOfPeriod(timeperiod)) {
+    const key = timeperiodToStr(month);
+    const [start, end] = key.split('/').map(d => new Date(d));
+    if (start >= now) continue;
+    const events = chunks
+      .filter(([period]) => {
+        const chunkStart = new Date(period.split('/')[0]);
+        return chunkStart >= start && chunkStart < end;
+      })
+      .flatMap(([, result]) => (result.window && result.window.cat_events) || []);
+    byPeriod[key] = { cat_events: mergeEventsByKeys(events, ['$category']) };
+  }
+  return byPeriod;
+}
+
 function concatEvents(chunks: Array<IEvent[] | undefined>): IEvent[] {
   const out: IEvent[] = [];
   for (const chunk of chunks) {
@@ -134,6 +175,10 @@ export function mergeFullDesktopResults(results: FullDesktopQueryResult[]): Full
         ['app'],
         DESKTOP_QUERY_EVENT_LIMIT
       ),
+      app_cat_events: mergeEventsByKeys(concatEvents(windows.map(w => w.app_cat_events)), [
+        'app',
+        '$category',
+      ]),
       title_events: mergeEventsByKeys(
         concatEvents(windows.map(w => w.title_events)),
         ['app', 'title'],

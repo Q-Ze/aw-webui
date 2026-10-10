@@ -66,11 +66,11 @@ interface State {
   active_set_ids: string[];
   views: View[];
   saved_queries: SavedQuery[];
+  // Words the Category Builder's "Ignore" button hides from its suggestions.
+  category_builder_ignored_words: string[];
 
   // Whether to show certain WIP features
   devmode: boolean;
-  showYearly: boolean;
-  useMultidevice: boolean;
   requestTimeout: number;
 
   // Whether to hide visualizations that lack required data (default: off)
@@ -79,11 +79,16 @@ interface State {
   // Set to true if settings loaded
   _loaded: boolean;
   // Keys that were actually present in storage (server or localStorage) on load.
-  // Lets us tell "user has never configured this" apart from "user configured it
-  // to the same value as the default" — needed to decide whether build-shipped
-  // preset categories may be activated. See `loadCategories()` in ~/util/classes.
+  // Presence of `classes` alone is not enough to suppress a shipped preset:
+  // first-run `save()` writes every key, including the install-default class
+  // list. `loadCategories()` additionally checks whether those classes still
+  // look unconfigured.
   _storedKeys: string[];
 }
+
+// Settings that no longer exist. The server has no delete endpoint, so stale values
+// may still be stored; skip them on load so they don't get patched back into state.
+const REMOVED_KEYS = new Set(['showYearly', 'useMultidevice']);
 
 export const useSettingsStore = defineStore('settings', {
   state: (): State => ({
@@ -122,12 +127,11 @@ export const useSettingsStore = defineStore('settings', {
     active_set_ids: ['default'],
     views: defaultViews,
     saved_queries: [],
+    category_builder_ignored_words: [],
 
     // Developer settings
     // NOTE: PRODUCTION might be undefined (in tests, for example)
     devmode: typeof PRODUCTION === 'undefined' ? true : !PRODUCTION,
-    showYearly: false,
-    useMultidevice: false,
     requestTimeout: 30,
     hideUnsupportedVisualizations: false,
 
@@ -177,7 +181,7 @@ export const useSettingsStore = defineStore('settings', {
 
       // 1. Server settings take priority
       for (const key of Object.keys(server_settings)) {
-        if (key.startsWith('_')) continue;
+        if (key.startsWith('_') || REMOVED_KEYS.has(key)) continue;
         if (key === 'locale' && !isAppLocale(server_settings[key])) {
           console.warn('Ignoring invalid locale from server:', server_settings[key]);
           continue;
@@ -188,7 +192,7 @@ export const useSettingsStore = defineStore('settings', {
 
       // 2. localStorage fills in gaps, but skip missing keys (null)
       for (const key of Object.keys(localStorage)) {
-        if (key.startsWith('_') || used.has(key)) continue;
+        if (key.startsWith('_') || REMOVED_KEYS.has(key) || used.has(key)) continue;
         const raw = localStorage.getItem(key);
         if (raw === null || raw === 'null') continue; // key absent or stored as null → keep state() default
 
@@ -199,7 +203,8 @@ export const useSettingsStore = defineStore('settings', {
           key == 'classes' ||
           key == 'category_sets' ||
           key == 'active_set_ids' ||
-          key == 'saved_queries';
+          key == 'saved_queries' ||
+          key == 'category_builder_ignored_words';
         try {
           if (isJsonKey) {
             let parsed = JSON.parse(raw);

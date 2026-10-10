@@ -145,6 +145,9 @@ export default {
       discard: 'Відкинути',
       addCategory: 'Додати категорію',
       categories: 'Категорії',
+      priority: 'Пріоритет',
+      priorityDefault: 'Типовий',
+      priorityInteger: 'Пріоритет має бути цілим числом.',
       builderTitle: 'Конструктор категорій',
       builderSubtitle: 'Створення правил із некатегоризованої активності',
       openBuilder: 'Відкрити конструктор',
@@ -156,12 +159,6 @@ export default {
       noteBody: 'Ці параметри для розробників; необережна зміна може щось зламати.',
       forceDevmode: 'Примусовий devmode',
       forceDevmodeHelp: 'Devmode вмикає функції, що ще в розробці.',
-      showYearly: 'Показувати річний діапазон',
-      showYearlyHelp:
-        'Запит за цілий рік дуже важкий і часто завершується таймаутом. На aw-server-rust може працювати швидше.',
-      multidevice: 'Запит з кількох пристроїв',
-      multideviceHelp:
-        'Події з кількох хостів у перегляді активності. Експеримент; браузерні bucket-и та «аудіо = активність» поки не підтримуються.',
       requestTimeout: 'Таймаут запиту',
       requestTimeoutHelp:
         'Максимальний час очікування відповіді сервера. Для великих запитів можна збільшити. Потрібно перезавантажити веб-інтерфейс.',
@@ -239,6 +236,8 @@ export default {
     bucketsToDelete: 'Bucket-и, які будуть видалені:',
     deleting: 'Видалення…',
     importing: 'Імпорт…',
+    importSuccess: 'Імпорт успішно завершено!',
+    importFailedGeneric: 'Імпорт не вдався, подробиці в логах aw-server',
     importHelpNew:
       'Потрібен JSON, експортований з одного або кількох bucket-ів. Імпорт не вдасться, якщо bucket з таким ID уже існує.',
     exportHelp: 'Завантажити всі bucket-и з цього сервера одним JSON-файлом. Для резервних копій.',
@@ -265,9 +264,19 @@ export default {
   },
   activity: {
     title: 'Активність',
+    browserAllowlistMiss:
+      'Для цього періоду не знайдено відповідного вікна браузера. Якщо ви користувалися форком Chromium/Firefox, назва його застосунку може ще не розпізнаватися.',
     for: 'для',
     host: 'Хост:',
+    devices: 'Пристрої:',
+    allDevices: 'Усі пристрої',
+    allDevicesCount: 'Усі пристрої ({count})',
+    onlyThisDevice: 'лише',
+    multideviceNote:
+      'Дані браузера та секундоміра доступні лише під час перегляду одного пристрою.',
     timeActive: 'Активний час:',
+    timeActiveTooltip:
+      'Active window time in the queried range, after the filters below. The bars in the period chart show raw device active time, so they can be slightly higher.',
     queryRange: 'Діапазон запиту:',
     filters: 'Фільтри',
     filtersTitle: 'Фільтри',
@@ -285,6 +294,12 @@ export default {
     periodLast30d: '30 днів',
     periodLast7dTitle: 'останні 7 днів',
     periodLast30dTitle: 'останні 30 днів',
+    periodCustomRange: 'власний діапазон',
+    rangeStart: 'Дата початку',
+    rangeEnd: 'Дата завершення',
+    invalidRange: 'Недійсний діапазон дат в URL, показано сьогодні.',
+    periodAllTime: 'увесь час',
+    allTimeSlowHint: 'Завантаження за весь час може тривати довго на великих базах даних.',
     filterAfkTooltip: 'Приховати час, коли AFK-watcher не фіксував введення з клавіатури чи миші.',
     filterAudibleTooltip:
       'Якщо активне вікно — вкладка браузера зі звуком, рахувати як активність. Потрібен browser watcher.',
@@ -328,6 +343,8 @@ export default {
     periodThisYear: 'цей рік',
     periodLast7d: 'останні 7 днів',
     periodLast30d: 'останні 30 днів',
+    periodCustomRange: 'за вибраний період',
+    periodAllTime: 'за весь час',
   },
   visualizations: {
     noData: '(немає даних)',

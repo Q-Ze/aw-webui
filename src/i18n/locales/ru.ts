@@ -145,6 +145,9 @@ export default {
       discard: 'Отбросить',
       addCategory: 'Добавить категорию',
       categories: 'Категории',
+      priority: 'Приоритет',
+      priorityDefault: 'По умолчанию',
+      priorityInteger: 'Приоритет должен быть целым числом.',
       builderTitle: 'Конструктор категорий',
       builderSubtitle: 'Создание правил из некатегоризированной активности',
       openBuilder: 'Открыть конструктор',
@@ -156,12 +159,6 @@ export default {
       noteBody: 'Эти параметры для разработчиков; необдуманное изменение может что-то сломать.',
       forceDevmode: 'Принудительный devmode',
       forceDevmodeHelp: 'Devmode включает функции, которые ещё в разработке.',
-      showYearly: 'Показывать годовой диапазон',
-      showYearlyHelp:
-        'Запрос за целый год очень тяжёлый и часто завершается таймаутом. На aw-server-rust может работать быстрее.',
-      multidevice: 'Запрос с нескольких устройств',
-      multideviceHelp:
-        'События с нескольких хостов в просмотре активности. Эксперимент; браузерные bucket-и и «аудио = активность» пока не поддерживаются.',
       requestTimeout: 'Таймаут запроса',
       requestTimeoutHelp:
         'Максимальное время ожидания ответа сервера. Для больших запросов можно увеличить. Нужно перезагрузить веб-интерфейс.',
@@ -239,6 +236,8 @@ export default {
     bucketsToDelete: 'Bucket-и, которые будут удалены:',
     deleting: 'Удаление…',
     importing: 'Импорт…',
+    importSuccess: 'Импорт успешно завершён!',
+    importFailedGeneric: 'Импорт не удался, подробности в логах aw-server',
     importHelpNew:
       'Нужен JSON, экспортированный из одного или нескольких bucket-ов. Импорт не удастся, если bucket с таким ID уже существует.',
     exportHelp: 'Скачать все bucket-и с этого сервера одним JSON-файлом. Для резервных копий.',
@@ -265,9 +264,19 @@ export default {
   },
   activity: {
     title: 'Активность',
+    browserAllowlistMiss:
+      'Для этого периода не найдено подходящее окно браузера. Если вы использовали форк Chromium/Firefox, имя его приложения может пока не распознаваться.',
     for: 'для',
     host: 'Хост:',
+    devices: 'Устройства:',
+    allDevices: 'Все устройства',
+    allDevicesCount: 'Все устройства ({count})',
+    onlyThisDevice: 'только',
+    multideviceNote:
+      'Данные браузера и секундомера доступны только при просмотре одного устройства.',
     timeActive: 'Активное время:',
+    timeActiveTooltip:
+      'Active window time in the queried range, after the filters below. The bars in the period chart show raw device active time, so they can be slightly higher.',
     queryRange: 'Диапазон запроса:',
     filters: 'Фильтры',
     filtersTitle: 'Фильтры',
@@ -285,6 +294,12 @@ export default {
     periodLast30d: '30 дней',
     periodLast7dTitle: 'последние 7 дней',
     periodLast30dTitle: 'последние 30 дней',
+    periodCustomRange: 'свой диапазон',
+    rangeStart: 'Дата начала',
+    rangeEnd: 'Дата окончания',
+    invalidRange: 'Неверный диапазон дат в URL, показан сегодняшний день.',
+    periodAllTime: 'всё время',
+    allTimeSlowHint: 'Загрузка за всё время может занять время на больших базах данных.',
     filterAfkTooltip: 'Скрыть время, когда AFK-watcher не фиксировал ввод с клавиатуры или мыши.',
     filterAudibleTooltip:
       'Если активное окно — вкладка браузера со звуком, считать активностью. Нужен browser watcher.',
@@ -328,6 +343,8 @@ export default {
     periodThisYear: 'этот год',
     periodLast7d: 'последние 7 дней',
     periodLast30d: 'последние 30 дней',
+    periodCustomRange: 'за выбранный период',
+    periodAllTime: 'за всё время',
   },
   visualizations: {
     noData: '(нет данных)',

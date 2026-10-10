@@ -30,7 +30,9 @@
  *
  * Behaviour of the resulting sets is defined in `loadCategories()` in
  * `~/util/classes`: preset sets are always *available*, but only activated by
- * default when the user has no stored categorization of their own.
+ * default when the user has no stored categorization of their own. A
+ * first-run `settings.save()` that persisted the install-default `classes`
+ * list does not count as user categorization.
  *
  * Malformed input is dropped with a warning rather than thrown — a broken
  * preset must never prevent the UI from starting.
@@ -72,12 +74,30 @@ function parseRule(raw: unknown, context: string): Rule | null {
   }
   const rule: Rule = { type: 'regex', regex: raw.regex };
   if (raw.ignore_case === true) rule.ignore_case = true;
+  const priority = parsePresetPriority(raw, context);
+  if (priority === null) return null;
+  if (priority !== undefined) rule.priority = priority;
   // Inlined from classes.normalizeSelectKeys to avoid a runtime cycle
   // (classes.ts imports this module). Empty/duplicate lists are dropped so
   // the rust parser never sees `select_keys: []`.
   const selectKeys = normalizePresetSelectKeys(raw.select_keys);
   if (selectKeys) rule.select_keys = selectKeys;
   return rule;
+}
+
+function parsePresetPriority(
+  raw: Record<string, unknown>,
+  context: string
+): number | null | undefined {
+  const value = raw.priority !== undefined ? raw.priority : raw.weight;
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    console.warn(`[presets] ${context}: priority/weight must be an integer, skipping`);
+    return null;
+  }
+  return value;
 }
 
 function normalizePresetSelectKeys(keys: unknown): string[] | undefined {

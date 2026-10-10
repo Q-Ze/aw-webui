@@ -49,12 +49,32 @@ export function formatTimelineBucketLabelHtml(
   options: BucketLabelOptions = {}
 ): string {
   const escaped = escapeHtml(bucketId);
-  const syncMatch = bucketId.match(/^([^_]+)_.*-synced-from-(.+)$/);
 
-  if (syncMatch) {
-    const baseLabel = addWrapOpportunities(escapeHtml(syncMatch[1]));
-    const remoteLabel = addWrapOpportunities(escapeHtml(syncMatch[2]));
-    return `<span class="timeline-label" title="${escaped}">${baseLabel} (synced from ${remoteLabel})</span>`;
+  // Detect synced buckets by searching for the literal '-synced-from-' marker
+  // rather than using an underscore-split regex. The old regex
+  //   /^([^_]+)_.*-synced-from-(.+)$/
+  // failed for bucket ids where the origin hostname contains underscores
+  // (e.g. 'aw-watcher-android-synced-from-my_phone'), because [^_]+ stopped
+  // at the underscore inside the hostname, leaving no room for '-synced-from-'
+  // to match in the remaining string.
+  const syncMarker = '-synced-from-';
+  const syncIdx = bucketId.indexOf(syncMarker);
+  if (syncIdx !== -1) {
+    const basePart = bucketId.slice(0, syncIdx);
+    const remotePart = bucketId.slice(syncIdx + syncMarker.length);
+    // Shorten the watcher name (strip aw-watcher- / aw- prefix and the
+    // optional _<hostname> suffix) so synced buckets use the same
+    // "short @ host" format as local ones:
+    //   aw-watcher-afk_host-synced-from-remote → "afk @ remote"
+    //   aw-watcher-afk_host                    → "afk @ host"
+    const underscoreIdx = basePart.indexOf('_');
+    const shortWatcher =
+      shortenBucketLabel(basePart) ??
+      (underscoreIdx !== -1 ? basePart.slice(0, underscoreIdx) : basePart);
+    const display = `${shortWatcher} @ ${remotePart}`;
+    return `<span class="timeline-label" title="${escaped}">${addWrapOpportunities(
+      escapeHtml(display)
+    )}</span>`;
   }
 
   const short = shortenBucketLabel(bucketId);

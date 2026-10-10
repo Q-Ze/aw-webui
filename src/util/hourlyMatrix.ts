@@ -244,6 +244,7 @@ async function fetchDailyHourlyActivity(nDays: number, endDate: Date): Promise<D
   const q: string[] = [];
   hosts_with_buckets.forEach(host => {
     const p = host_params[host];
+    if (!('bid_window' in p)) return;
     const suffix = host.replace(/[^a-zA-Z0-9_]/g, '');
     q.push(`events_${suffix} = flood(query_bucket("${p.bid_window}"));`);
     q.push(`not_afk_${suffix} = flood(query_bucket("${p.bid_afk}"));`);

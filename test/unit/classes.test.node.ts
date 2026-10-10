@@ -26,6 +26,24 @@ test('matches string to category', () => {
   expect(cat).toEqual(testClasses[1]);
 });
 
+test('explicit priority can override category depth when matching strings', () => {
+  const cats: Category[] = [
+    { name: ['Shallow'], rule: { type: 'regex', regex: 'vim', priority: 25 } },
+    { name: ['Group', 'Deep'], rule: { type: 'regex', regex: 'vim' } },
+  ];
+
+  expect(classes.matchString('vim', cats)?.name).toEqual(['Shallow']);
+});
+
+test('weight is accepted as a category priority alias', () => {
+  const cats: Category[] = [
+    { name: ['Shallow'], rule: { type: 'regex', regex: 'vim', weight: 25 } },
+    { name: ['Group', 'Deep'], rule: { type: 'regex', regex: 'vim' } },
+  ];
+
+  expect(classes.matchString('vim', cats)?.name).toEqual(['Shallow']);
+});
+
 test('matches events to category', () => {
   let events: IEvent[] = [
     { timestamp: new Date().toISOString(), duration: 0, data: { title: 'subsubtest' } },
@@ -36,6 +54,18 @@ test('matches events to category', () => {
   expect(events[0].data.$category).toEqual(testClasses[1].name);
   expect(events[1].data.$category).toEqual(testClasses[0].name);
   expect(events[2].data.$category).toEqual(['Uncategorized']);
+});
+
+test('explicit priority can override category depth when classifying events', () => {
+  const cats: Category[] = [
+    { name: ['Shallow'], rule: { type: 'regex', regex: 'vim', priority: 25 } },
+    { name: ['Group', 'Deep'], rule: { type: 'regex', regex: 'vim' } },
+  ];
+  const events: IEvent[] = [
+    { timestamp: new Date().toISOString(), duration: 0, data: { title: 'vim' } },
+  ];
+
+  expect(classes.classifyEvents(events, cats)[0].data.$category).toEqual(['Shallow']);
 });
 
 test('select_keys restricts regex matching to named fields', () => {
@@ -99,4 +129,24 @@ test('normalizeSelectKeys rejects empty lists', () => {
   expect(classes.normalizeSelectKeys([])).toBeUndefined();
   expect(classes.normalizeSelectKeys(null)).toBeUndefined();
   expect(classes.normalizeSelectKeys(['app', 'title'])).toEqual(['app', 'title']);
+});
+
+// #382: a blank regex must not match everything client-side, matching how
+// aw-core's server-side categorize() treats it.
+test('blank regex category never matches, children still do', () => {
+  const cats: Category[] = [
+    { name: ['Work'], rule: { type: 'regex', regex: '' } },
+    { name: ['Work', 'Programming'], rule: { type: 'regex', regex: 'vim' } },
+  ];
+  expect(classes.matchString('firefox', cats)).toBeNull();
+  expect(classes.matchString('vim', cats)?.name).toEqual(['Work', 'Programming']);
+
+  const events = classes.classifyEvents(
+    [
+      { timestamp: '', duration: 1, data: { app: 'firefox', title: 'x' } },
+      { timestamp: '', duration: 1, data: { app: 'vim', title: 'x' } },
+    ] as IEvent[],
+    cats
+  );
+  expect(events.map(e => e.data.$category)).toEqual([['Uncategorized'], ['Work', 'Programming']]);
 });
