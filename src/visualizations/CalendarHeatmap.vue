@@ -70,15 +70,19 @@ export default {
         );
       }
 
-      const q = [
-        'events = [];',
-        ...afk_buckets.map(
-          bid => `events = union_no_overlap(events, flood(query_bucket("${bid}")));`
-        ),
-        'events = filter_keyvals(events, "status", ["not-afk"]);',
-        'duration = sum_durations(events);',
-        'RETURN = {"duration": duration};',
-      ];
+      // Filter each bucket to not-afk BEFORE unioning (same rationale as
+      // annualReport.ts — unioning mixed-status events loses not-afk time).
+      const q: string[] = [];
+      afk_buckets.forEach((bid, i) => {
+        q.push(`afk_${i} = flood(query_bucket("${bid}"));`);
+        q.push(`afk_${i} = filter_keyvals(afk_${i}, "status", ["not-afk"]);`);
+      });
+      q.push('events = [];');
+      afk_buckets.forEach((_, i) => {
+        q.push(`events = union_no_overlap(events, afk_${i});`);
+      });
+      q.push('duration = sum_durations(events);');
+      q.push('RETURN = {"duration": duration};');
 
       const data = await getClient().query(days, q, { name: 'heatmapQuery' });
       const byDate: Record<string, number> = {};

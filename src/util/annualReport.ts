@@ -116,13 +116,20 @@ async function fetchYearDaily(year: number): Promise<Record<string, number>> {
   const afk = afkBucketsForQuery();
   if (afk.length === 0) return {};
 
-  const q = [
-    'events = [];',
-    ...afk.map(bid => `events = union_no_overlap(events, flood(query_bucket("${bid}")));`),
-    'events = filter_keyvals(events, "status", ["not-afk"]);',
-    'duration = sum_durations(events);',
-    'RETURN = {"duration": duration};',
-  ];
+  // Filter each bucket to not-afk BEFORE unioning: unioning mixed-status
+  // events first loses not-afk time when afk events from other devices
+  // overlap (observed as 251h vs the correct 1686h across all buckets).
+  const q: string[] = [];
+  afk.forEach((bid, i) => {
+    q.push(`afk_${i} = flood(query_bucket("${bid}"));`);
+    q.push(`afk_${i} = filter_keyvals(afk_${i}, "status", ["not-afk"]);`);
+  });
+  q.push('events = [];');
+  afk.forEach((_, i) => {
+    q.push(`events = union_no_overlap(events, afk_${i});`);
+  });
+  q.push('duration = sum_durations(events);');
+  q.push('RETURN = {"duration": duration};');
 
   const now = moment();
   const isCurrentYear = year === now.year();
@@ -272,13 +279,20 @@ async function fetchYearSamples(
   };
   if (afk.length === 0) return empty;
 
-  const q = [
-    'events = [];',
-    ...afk.map(bid => `events = union_no_overlap(events, flood(query_bucket("${bid}")));`),
-    'events = filter_keyvals(events, "status", ["not-afk"]);',
-    'duration = sum_durations(events);',
-    'RETURN = {"duration": duration};',
-  ];
+  // Filter each bucket to not-afk BEFORE unioning: unioning mixed-status
+  // events first loses not-afk time when afk events from other devices
+  // overlap (observed as 251h vs the correct 1686h across all buckets).
+  const q: string[] = [];
+  afk.forEach((bid, i) => {
+    q.push(`afk_${i} = flood(query_bucket("${bid}"));`);
+    q.push(`afk_${i} = filter_keyvals(afk_${i}, "status", ["not-afk"]);`);
+  });
+  q.push('events = [];');
+  afk.forEach((_, i) => {
+    q.push(`events = union_no_overlap(events, afk_${i});`);
+  });
+  q.push('duration = sum_durations(events);');
+  q.push('RETURN = {"duration": duration};');
 
   const now = moment();
   const yearEnd =
