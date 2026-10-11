@@ -98,14 +98,13 @@ export function getCachedYearReport(year: number): YearReport | null {
 }
 
 function afkBucketsForQuery(): string[] {
-  // Upstream removed useMultidevice (replaced by device-selection UI);
-  // the annual report always aggregates across all hosts.
+  // Find ALL afk bucket IDs directly — hostname-based lookup misses buckets
+  // where the new aw-sync sets a sanitized hostname (e.g. `qbzdemacbook-air_local`
+  // instead of `QBZdeMacBook-Air.local`).
   const bucketsStore = useBucketsStore();
-  return _.flatten(
-    bucketsStore.hosts
-      .filter(h => h && !h.startsWith('fakedata'))
-      .map(h => bucketsStore.bucketsAFK(h))
-  ).filter(Boolean);
+  return (bucketsStore.buckets || [])
+    .filter(b => b.id.startsWith('aw-watcher-afk_') && !b.id.includes('fakedata'))
+    .map(b => b.id);
 }
 
 async function fetchYearDaily(year: number): Promise<Record<string, number>> {

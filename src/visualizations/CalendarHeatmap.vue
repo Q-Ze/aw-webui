@@ -48,11 +48,11 @@ export default {
       // Same bucket-selection policy as the activity store's history query:
       // all hosts' afk buckets in multidevice mode, else the current host's.
       let afk_buckets: string[] = [];
-      const allAfkBuckets = _.flatten(
-        bucketsStore.hosts
-          .filter(h => h && !h.startsWith('fakedata'))
-          .map(h => bucketsStore.bucketsAFK(h))
-      );
+      // Direct bucket-ID scan: hostname-based lookup misses buckets with
+      // sanitized hostnames from the new aw-sync naming convention.
+      const allAfkBuckets = (bucketsStore.buckets || [])
+        .filter(b => b.id.startsWith('aw-watcher-afk_') && !b.id.includes('fakedata'))
+        .map(b => b.id);
       afk_buckets = allAfkBuckets;
       afk_buckets = afk_buckets.filter(Boolean);
       if (afk_buckets.length === 0) {
