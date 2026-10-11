@@ -761,7 +761,10 @@ export default {
             continue;
           }
           const sec = byDate[key] || 0;
-          const level = sec < 60 ? 0 : Math.min(5, 1 + Math.floor((sec / max) * 4.999));
+          // Sqrt scale: a linear scale against the yearly max pushes
+          // half-day activity to level 1-2 (nearly white), making Aug+
+          // look "empty" on screen. Sqrt gives 3.7h/day enough contrast.
+          const level = sec < 60 ? 0 : Math.min(5, 1 + Math.floor(Math.sqrt(sec / max) * 4.999));
           col.push({
             key,
             level,
