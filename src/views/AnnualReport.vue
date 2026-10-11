@@ -145,16 +145,17 @@ div.annual-report
       // 全年热力图
       div.report-card
         div.card-title 🗓️ 全年热力图
-        div.heat-months-row
-          div.heat-month-label(v-for="ml in heatMonthLabels", :key="ml.idx", :style="{ left: `${ml.leftPct}%` }") {{ ml.label }}
-        div.heat-grid
-          div.heat-col(v-for="(col, ci) in heatColumns", :key="ci")
-            div.heat-cell(
-              v-for="cell in col",
-              :key="cell.key",
-              :class="[`heat-l${cell.level}`]",
-              :title="cell.title"
-            )
+        div.heat-scroll
+          div.heat-months-row
+            div.heat-month-label(v-for="ml in heatMonthLabels", :key="ml.idx", :style="{ left: `${ml.leftPx}px` }") {{ ml.label }}
+          div.heat-grid
+            div.heat-col(v-for="(col, ci) in heatColumns", :key="ci")
+              div.heat-cell(
+                v-for="cell in col",
+                :key="cell.key",
+                :class="[`heat-l${cell.level}`]",
+                :title="cell.title"
+              )
 
       // 星期 × 小时
       div.report-card
@@ -249,6 +250,11 @@ div.annual-report
 }
 
 // 全年热力图（GitHub 风格）
+.heat-scroll {
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
 .heat-months-row {
   position: relative;
   height: 14px;
@@ -260,13 +266,12 @@ div.annual-report
   font-size: 9px;
   color: var(--aw-vis-subtext, #6b7280);
   transform: translateX(-50%);
+  white-space: nowrap;
 }
 
 .heat-grid {
   display: flex;
   gap: 2px;
-  overflow-x: auto;
-  padding-bottom: 4px;
 }
 
 .heat-col {
@@ -775,9 +780,13 @@ export default {
       }
       return cols;
     },
-    heatMonthLabels(): { idx: number; label: string; leftPct: number }[] {
-      const total = Math.max(this.heatColumns.length, 1);
-      const labels: { idx: number; label: string; leftPct: number }[] = [];
+    heatMonthLabels(): { idx: number; label: string; leftPx: number }[] {
+      // Pixel positions matching the flex grid: each column is CELL_W px
+      // wide with GAP px between columns. Percentage positioning drifted
+      // because it ignored the gaps (44 weeks × 2px = 88px offset by Dec).
+      const CELL_W = 9;
+      const GAP = 2;
+      const labels: { idx: number; label: string; leftPx: number }[] = [];
       let lastMonth = -1;
       this.heatColumns.forEach((col, ci) => {
         const first = col.find(c => c.level >= 0);
@@ -787,7 +796,7 @@ export default {
           labels.push({
             idx: ci,
             label: moment(first.key).format('MMM'),
-            leftPct: ((ci + 0.5) / total) * 100,
+            leftPx: ci * (CELL_W + GAP) + CELL_W / 2,
           });
           lastMonth = m;
         }
