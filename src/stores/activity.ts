@@ -511,7 +511,7 @@ export const useActivityStore = defineStore('activity', {
       }
 
       // Perform this last, as it takes the longest.
-      // Skipped when query_desktop_full already derived it (long ranges).
+      // Skipped when query_desktop_full already derived it (long ranges and Year).
       const derivedByPeriod = this.window.available && usesMonthlyBuckets(query_options.timeperiod);
       if ((this.window.available || this.android.available) && !derivedByPeriod) {
         await this.query_category_time_by_period(query_options);
@@ -917,11 +917,14 @@ export const useActivityStore = defineStore('activity', {
       const client = getClient();
       const signal = client.controller.signal;
       const data: IEvent[][] = [];
-      for (const chunk of chunkPeriodsBySpan(periods)) {
+      const chunks = chunkPeriodsBySpan(periods);
+      this.progress_add(chunks.length);
+      for (const chunk of chunks) {
         if (signal.aborted) {
           throw signal['reason'] || 'unknown reason';
         }
         data.push(...(await client.query(chunk, query, { name: 'activityQuery', verbose: true })));
+        this.progress_tick();
       }
 
       // Our fix: watchers that die without marking afk leave multi-day not-afk
@@ -1110,13 +1113,16 @@ export const useActivityStore = defineStore('activity', {
       const client = getClient();
       const signal = client.controller.signal;
       const data: number[] = [];
-      for (const chunk of chunkPeriodsBySpan(periods)) {
+      const chunks = chunkPeriodsBySpan(periods);
+      this.progress_add(chunks.length);
+      for (const chunk of chunks) {
         if (signal.aborted) {
           throw signal['reason'] || 'unknown reason';
         }
         data.push(
           ...(await client.query(chunk, query, { name: 'multideviceActivityQuery', verbose: true }))
         );
+        this.progress_tick();
       }
 
       // Our fix: cap each period's total at the period's own length so
