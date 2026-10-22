@@ -290,6 +290,7 @@ export default {
     onlyThisDevice: 'only',
     multideviceNote: 'Browser and stopwatch data are only available when viewing a single device.',
     timeActive: 'Time active:',
+    timeActiveAvg: 'avg/day:',
     timeActiveTooltip:
       'Active window time in the queried range, after the filters below. The bars in the period chart show raw device active time, so they can be slightly higher.',
     queryRange: 'Query range:',

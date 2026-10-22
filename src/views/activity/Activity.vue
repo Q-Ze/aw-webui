@@ -56,6 +56,8 @@ div
       li.list-group-item.pl-0.pr-3.py-0.border-0(:title="$t('activity.timeActiveTooltip')")
         b.mr-1 {{ $t('activity.timeActive') }}
         span {{ activityStore.active.duration | friendlyduration }}
+        span.text-muted.ml-2(v-if="activeDays > 1")
+          | {{ $t('activity.timeActiveAvg') }} {{ activeAvgSeconds | friendlyduration }}
     b-alert.py-1.px-2.mb-1.small(
       v-if="isMultidevice && !multideviceNoteDismissed"
       show
@@ -577,6 +579,22 @@ export default {
     periodusage: function () {
       if (!this.timeperiod) return [];
       return this.activityStore.getActiveHistoryAroundTimeperiod(this.timeperiod);
+    },
+    // Calendar days spanned by the current query range (week → 7, month →
+    // 28-31, custom range → its day count). Drives the avg/day display.
+    activeDays: function () {
+      if (!this.timeperiod) return 1;
+      const start = moment(this.timeperiod.start);
+      return start
+        .clone()
+        .add(
+          this.timeperiod.length[0],
+          this.timeperiod.length[1] as moment.unitOfTime.DurationConstructor
+        )
+        .diff(start, 'days');
+    },
+    activeAvgSeconds: function () {
+      return this.activityStore.active.duration / this.activeDays;
     },
     timeperiod: function () {
       const settingsStore = useSettingsStore();
