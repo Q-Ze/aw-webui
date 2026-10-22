@@ -122,6 +122,11 @@ export function parseHostParam(param: string, knownHosts: string[] = []): HostSe
   if (knownHosts.includes(decoded)) {
     return { all: false, hosts: [decoded] };
   }
+  // Legacy links used "all" before the "@all" marker existed; treat it as all
+  // devices (the knownHosts checks above let an actual host spelled "all" win).
+  if (param === 'all') {
+    return { all: true, hosts: [] };
+  }
   return { all: false, hosts: items.length > 0 ? items : [param] };
 }
 

@@ -67,6 +67,14 @@ describe('parseHostParam', () => {
     expect(parseHostParam('50%25off', [])).toEqual({ all: false, hosts: ['50%25off'] });
   });
 
+  it('treats the legacy "all" param as all devices', () => {
+    expect(parseHostParam('all', ['self', 'other'])).toEqual({ all: true, hosts: [] });
+  });
+
+  it('reaches a real host named "all" while the legacy param means all devices', () => {
+    expect(parseHostParam('all', ['all', 'other'])).toEqual({ all: false, hosts: ['all'] });
+  });
+
   it('handles an empty param', () => {
     expect(parseHostParam('')).toEqual({ all: false, hosts: [] });
   });
