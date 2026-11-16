@@ -48,12 +48,15 @@ mixin navTools(desktop)
     b-dropdown-item(to="/search")
       icon(name="search")
       | {{ $t('nav.search') }}
+    b-dropdown-item(to="/category-builder" data-testid="nav-category-builder")
+      icon(name="tags")
+      | {{ $t('nav.categoryBuilder') }}
     b-dropdown-item(to="/work-report")
       icon(name="briefcase")
       | {{ $t('nav.workReport') }}
     b-dropdown-item(to="/billing")
       icon(name="dollar-sign")
-      | Billable Hours
+      | {{ $t('ui.header.billableHours') }}
     b-dropdown-item(to="/analysis/activity" v-if="devmode")
       icon(name="robot")
       | {{ $t('nav.aiSummary') }}
@@ -184,6 +187,7 @@ import 'vue-awesome/icons/stream';
 import 'vue-awesome/icons/database';
 import 'vue-awesome/icons/search';
 import 'vue-awesome/icons/code';
+import 'vue-awesome/icons/tags';
 import 'vue-awesome/icons/chart-line';
 import 'vue-awesome/icons/chart-pie';
 import 'vue-awesome/icons/flag-checkered';

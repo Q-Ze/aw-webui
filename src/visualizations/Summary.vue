@@ -5,7 +5,7 @@ div
   div(:style='{"visibility": visible_more ? "visible" : "hidden"}')
     b-button.mt-1.mr-2(v-if="fields && (limit_ < fields.length)", size="sm", variant="outline-secondary", @click="limit_ += 5")
       icon(name="angle-double-down")
-      | Show more
+      | {{ $t('ui.summary.showMore') }}
     b-button.mt-1(v-if="limit_ != limit" size="sm", variant="outline-secondary", @click="limit_ = limit")
       icon(name="angle-double-up")
 </template>
@@ -47,9 +47,15 @@ export default {
       type: Boolean,
       default: false,
     },
+    // Optional: when a parent keeps stable name/color callbacks, changing this
+    // still triggers the existing update path (SelectableEventView data key).
+    dataKey: {
+      type: String,
+      default: null,
+    },
   },
   data: function () {
-    return { limit_: this.limit };
+    return { limit_: this.limit, updateQueued: false };
   },
   computed: {
     visible_more() {
@@ -58,10 +64,25 @@ export default {
   },
   watch: {
     fields: function () {
-      this.update();
+      this.scheduleUpdate();
     },
     limit_: function () {
-      this.update();
+      this.scheduleUpdate();
+    },
+    dataKey: function () {
+      this.scheduleUpdate();
+    },
+    namefunc: function () {
+      this.scheduleUpdate();
+    },
+    colorfunc: function () {
+      this.scheduleUpdate();
+    },
+    hoverfunc: function () {
+      this.scheduleUpdate();
+    },
+    linkfunc: function () {
+      this.scheduleUpdate();
     },
   },
   mounted: function () {
@@ -70,6 +91,14 @@ export default {
     this.update();
   },
   methods: {
+    scheduleUpdate: function () {
+      if (this.updateQueued) return;
+      this.updateQueued = true;
+      this.$nextTick(() => {
+        this.updateQueued = false;
+        this.update();
+      });
+    },
     update: function () {
       const el = this.$el.children[0];
       if (this.fields) {
@@ -79,10 +108,11 @@ export default {
           this.namefunc,
           this.hoverfunc,
           this.colorfunc,
-          this.linkfunc
+          this.linkfunc,
+          this.$t('visualizations.noData')
         );
       } else {
-        summary.set_status(el, 'Loading...');
+        summary.set_status(el, this.$t('common.loading'));
       }
     },
   },

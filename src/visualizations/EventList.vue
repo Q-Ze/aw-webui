@@ -5,18 +5,18 @@ div
   event-editor(
     v-if="editable"
     :event="editableEvent", :bucket_id="bucket_id",
-    @save="(e) => $emit('save', e)", @delete="removeEvent"
+    @save="(e) => $emit('save', e)", @deleted="removeEvent"
   )
   b-card.event-container(no-block=true)
     span(slot="header")
-      h4.card-title Events
+      h4.card-title {{ $t('ui.eventList.title') }}
       span.pagination-header
-        | Showing {{ displayed_events.length }} events #[span(v-if="events.length > displayed_events.length") (out of {{ events.length }})]
+        | {{ $t('ui.eventList.showing', { shown: displayed_events.length, total: safe_events.length }) }}
       b-button(@click="expandList", size="sm", style="float: right;")
         span(v-if="!isListExpanded")
-          | Expand list
+          | {{ $t('ui.eventList.expand') }}
         span(v-else)
-          | Condense list
+          | {{ $t('ui.eventList.condense') }}
 
     ul.event-list(:class="{ 'expand': isListExpanded }")
       li(v-for="event in displayed_events")
@@ -34,7 +34,10 @@ div
             span(v-if="editable")
               b-btn.field(@click="() => {editEvent(event)}" variant="outline-dark" size="sm" style="padding: 0 0.2em 0 0.2em")
                 icon(name="edit")
-                | Edit
+                | {{ $t('ui.eventList.edit') }}
+    div.text-center.p-2(v-if="safe_events.length > displayed_events.length")
+      b-button.show-more(@click="showMore", size="sm", variant="outline-dark")
+        | {{ $t('ui.eventList.showMore', { count: Math.min(pageSize, safe_events.length - displayed_events.length) }) }}
 </template>
 
 <style scoped lang="scss">
@@ -104,6 +107,26 @@ $border-color: #ddd;
   }
 }
 
+// On phones a single nowrap row pushes the event data (titles, URLs, ...)
+// off-screen, so let the fields wrap within the list instead.
+@media (max-width: 575.98px) {
+  .event-list {
+    white-space: normal;
+  }
+
+  .event {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .field {
+    margin: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+}
+
 /* Flips the outer element once, then all direct children once,
    leaving the scrollbar in the first flipped yet the content correct */
 .scrollbar-flipped,
@@ -138,13 +161,24 @@ export default {
   data: function () {
     return {
       isListExpanded: false,
+      pageSize: 100,
       limit: 100,
       editableEvent: null,
     };
   },
   computed: {
+    safe_events: function () {
+      return Array.isArray(this.events) ? this.events : [];
+    },
     displayed_events: function () {
-      return this.events.slice(0, this.limit);
+      return this.safe_events.slice(0, this.limit);
+    },
+  },
+  watch: {
+    events(events, previousEvents) {
+      if (events !== previousEvents) {
+        this.limit = this.pageSize;
+      }
     },
   },
   methods: {
@@ -154,13 +188,20 @@ export default {
         this.$bvModal.show('edit-modal-' + event.id);
       });
     },
+    showMore: function () {
+      this.limit += this.pageSize;
+    },
     expandList: function () {
       this.isListExpanded = !this.isListExpanded;
       console.log('List should be expanding: ', this.isListExpanded);
     },
-    removeEvent: function (_event) {
-      // FIXME: Illegal mutation of prop, need to propagate upwards or move into vuex.
-      //this.events = this.events.filter(e => e.id != event.id);
+    removeEvent: function (event, bucketId) {
+      // Only the owner may change the list; forward the confirmed mutation's
+      // bucket, not the current prop (navigation may have happened meanwhile).
+      this.$emit('deleted', event, bucketId);
+      if (bucketId === this.bucket_id && this.editableEvent && this.editableEvent.id === event.id) {
+        this.editableEvent = null;
+      }
     },
   },
 };

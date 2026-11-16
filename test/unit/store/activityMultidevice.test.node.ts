@@ -1,6 +1,7 @@
 import { setActivePinia, createPinia } from 'pinia';
 
-import { useActivityStore, uncachedHistoryPeriods } from '~/stores/activity';
+import { useActivityStore } from '~/stores/activity';
+import { selectPeriodsToQuery } from '~/util/activeHistory';
 import { useBucketsStore } from '~/stores/buckets';
 import { createClient } from '~/util/awclient';
 
@@ -70,28 +71,6 @@ describe('activity store host selection', () => {
   });
 });
 
-describe('activity store history cache', () => {
-  setActivePinia(createPinia());
-  const activityStore = useActivityStore();
-
-  test('is kept while the queried devices and buckets are the same', () => {
-    activityStore.query_hosts = ['a', 'b'];
-    activityStore.buckets.afk = ['afk_a', 'afk_b'];
-    activityStore.buckets.android = [];
-    activityStore.set_history_key();
-    activityStore.active.history = { p: [] } as any;
-    activityStore.set_history_key();
-    expect(activityStore.active.history).toEqual({ p: [] });
-  });
-
-  test('is cleared when a new device shows up under the same selection', () => {
-    activityStore.active.history = { p: [] } as any;
-    activityStore.query_hosts = ['a', 'b', 'phone'];
-    activityStore.buckets.android = ['aw-watcher-android-test-synced-from-phone'];
-    activityStore.set_history_key();
-    expect(activityStore.active.history).toEqual({});
-  });
-});
 describe('multidevice availability flags', () => {
   setActivePinia(createPinia());
   const activityStore = useActivityStore();
@@ -139,19 +118,19 @@ describe('multidevice availability flags', () => {
   });
 });
 
-describe('uncachedHistoryPeriods', () => {
+describe('selectPeriodsToQuery', () => {
   const now = new Date('2026-09-15T12:00:00Z');
   const aug = '2026-08-01T00:00:00Z/2026-09-01T00:00:00Z';
   const sep = '2026-09-01T00:00:00Z/2026-10-01T00:00:00Z';
   const oct = '2026-10-01T00:00:00Z/2026-11-01T00:00:00Z';
 
   test('reuses cached past periods (keys, not values)', () => {
-    expect(uncachedHistoryPeriods([aug], { [aug]: [] }, now)).toEqual([]);
-    expect(uncachedHistoryPeriods([aug], {}, now)).toEqual([aug]);
+    expect(selectPeriodsToQuery([aug], { [aug]: [] }, now)).toEqual([]);
+    expect(selectPeriodsToQuery([aug], {}, now)).toEqual([aug]);
   });
 
   test('re-queries the period containing now, and skips future ones', () => {
-    expect(uncachedHistoryPeriods([aug, sep, oct], { [aug]: [], [sep]: [] }, now)).toEqual([sep]);
+    expect(selectPeriodsToQuery([aug, sep, oct], { [aug]: [], [sep]: [] }, now)).toEqual([sep]);
   });
 });
 
@@ -194,6 +173,20 @@ describe('multidevice path for custom ranges and All time', () => {
     expect(s.query_category_time_by_period).toHaveBeenCalled();
   });
 
+  test('an exact interval keeps the category chart and its exact timeperiod', async () => {
+    const s = spies();
+    const timeperiod = { start: '2026-10-20T13:00:00Z', length: [3600000, 'milliseconds'] };
+    await activityStore.ensure_loaded_multidevice(
+      { host: '@all', skip_active_history: true, timeperiod } as any,
+      ['self', 'phone']
+    );
+    expect(s.query_active_history_multidevice).not.toHaveBeenCalled();
+    expect(s.query_category_time_by_period).toHaveBeenCalledWith(
+      expect.objectContaining({ timeperiod })
+    );
+    expect(s.query_multidevice_full).toHaveBeenCalled();
+  });
+
   test('long ranges take the barchart from the query chunks instead', async () => {
     const s = spies();
     await activityStore.ensure_loaded_multidevice(
@@ -205,5 +198,41 @@ describe('multidevice path for custom ranges and All time', () => {
     );
     expect(s.query_active_history_multidevice).toHaveBeenCalled();
     expect(s.query_category_time_by_period).not.toHaveBeenCalled();
+  });
+});
+
+describe('per-device duration loading lifecycle', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  test('clears the previous breakdown immediately when a new selection starts loading', () => {
+    const store = useActivityStore();
+    store.query_window_completed({
+      app_events: [],
+      title_events: [],
+      duration: 15,
+      host_durations: [
+        { host: 'desktop', duration: 10, overlap: 0 },
+        { host: 'phone', duration: 5, overlap: 3 },
+      ],
+    });
+    expect(store.window.host_durations).toHaveLength(2);
+
+    store.start_loading({ host: 'desktop,tablet' } as any);
+
+    expect(store.active.duration).toBeNull();
+    expect(store.window.host_durations).toEqual([]);
+
+    // Only a completed query may populate the replacement devices/durations.
+    store.query_window_completed({
+      app_events: [],
+      title_events: [],
+      duration: 7,
+      host_durations: [
+        { host: 'desktop', duration: 4, overlap: 0 },
+        { host: 'tablet', duration: 3, overlap: 0 },
+      ],
+    });
+    expect(store.window.host_durations.map(row => row.host)).toEqual(['desktop', 'tablet']);
+    expect(store.active.duration).toBe(7);
   });
 });

@@ -1,5 +1,6 @@
 import moment, { Moment, Duration } from 'moment';
 import { useSettingsStore } from '~/stores/settings';
+import { i18n } from '~/i18n';
 
 function getStartOfDayOffset() {
   const settingsStore = useSettingsStore();
@@ -15,15 +16,18 @@ export function seconds_to_duration(seconds: number) {
   const hrs = Math.floor(seconds / 60 / 60);
   const min = Math.floor((seconds / 60) % 60);
   const sec = Math.floor(seconds % 60);
+  const hourUnit = String(i18n.t('common.durationHours'));
+  const minuteUnit = String(i18n.t('common.durationMinutes'));
+  const secondUnit = String(i18n.t('common.durationSeconds'));
   const l = [];
 
   if (hrs > 0) {
-    l.push(hrs + 'h');
-    l.push(min + 'm');
+    l.push(hrs + hourUnit);
+    l.push(min + minuteUnit);
   } else if (min > 0) {
-    l.push(min + 'm');
+    l.push(min + minuteUnit);
   }
-  l.push(sec + 's');
+  l.push(sec + secondUnit);
 
   return l.join(' ');
 }
@@ -78,7 +82,14 @@ export function get_day_start_with_offset(dateParam: Moment | string, offset?: s
   const dateMoment = dateParam ? moment(dateParam) : moment().startOf('day');
   const start_of_day_hours = parseInt(offset.split(':')[0]);
   const start_of_day_minutes = parseInt(offset.split(':')[1]);
-  return dateMoment.hour(start_of_day_hours).minute(start_of_day_minutes).format();
+  // Zero seconds/ms too: callers pass "now"-derived Moments, and a boundary that
+  // inherits the refresh instant's seconds shifts every report day by up to 59 s.
+  return dateMoment
+    .hour(start_of_day_hours)
+    .minute(start_of_day_minutes)
+    .second(0)
+    .millisecond(0)
+    .format();
 }
 
 // Return the startOfDay offset as a number of hours
@@ -125,9 +136,11 @@ export function get_today_with_offset(offset?: string): string {
   if (!offset) {
     offset = getStartOfDayOffset();
   }
-  // Gets "today" in an offset-aware way
-  const offset_dur = get_offset_duration(offset);
-  return moment().subtract(offset_dur).startOf('day').format('YYYY-MM-DD');
+  // Compare against the local wall-clock boundary: subtracting elapsed hours
+  // can cross the wrong midnight on mornings when the UTC offset changes.
+  const now = moment();
+  const dayStart = moment(get_day_start_with_offset(now, offset));
+  return (now.isBefore(dayStart) ? now.subtract(1, 'day') : now).format('YYYY-MM-DD');
 }
 
 export function format_weekday_short(dateParam: Date, locale?: string | string[]) {

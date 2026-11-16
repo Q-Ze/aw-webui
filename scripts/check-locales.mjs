@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
- * Validates i18n locale files: key parity vs en, placeholder consistency, untranslated strings.
- * Usage: node scripts/check-locales.mjs
+ * Validates i18n locale files: key parity vs en, placeholder consistency, untranslated strings,
+ * that every locale list in src/i18n/index.ts (plus IDENTICAL_OK here) stays sorted, and that
+ * SUPPORTED matches the locale files.
+ * Usage: node scripts/check-locales.mjs [--verbose]
  */
 import fs from 'fs';
 import path from 'path';
@@ -9,10 +11,41 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOCALES_DIR = path.join(__dirname, '../src/i18n/locales');
-const LOCALES = ['en', 'uk', 'de', 'ru', 'zh-CN', 'sv'];
+// Derived from the files, so adding a locale never edits this script.
+const LOCALES = fs
+  .readdirSync(LOCALES_DIR)
+  .filter(name => name.endsWith('.ts'))
+  .map(name => name.slice(0, -'.ts'.length))
+  .sort((a, b) => a.localeCompare(b, 'en'));
+// These new messages intentionally use English fallback until translated.
+const ENGLISH_FALLBACK_KEYS = new Set([
+  'settings.language.machineTranslatedNote',
+  'settings.language.contributeTranslation',
+  'settings.layout.title',
+  'settings.layout.help',
+  'settings.layout.textSize',
+  'settings.layout.textHelp',
+  'settings.layout.automaticWidth',
+  'settings.layout.contentWidth',
+  'settings.layout.widthHelp',
+  'settings.layout.save',
+  'settings.layout.saving',
+  'settings.layout.reset',
+  'settings.layout.saved',
+  'settings.layout.changedElsewhere',
+  'settings.layout.invalid',
+  'settings.layout.saveFailed',
+]);
+const SRC_DIR = path.join(__dirname, '../src');
+const INDEX_PATH = path.join(SRC_DIR, 'i18n/index.ts');
+const verbose = process.argv.includes('--verbose');
 
-/** Substrings: identical en/value is OK when value contains any of these (case-insensitive). */
-const ALLOWLIST_SUBSTRINGS = [
+/**
+ * Identical en/value is OK when every word in it is one of these (case-insensitive):
+ * proper nouns, acronyms and ActivityWatch domain terms. Keep ordinary UI words out,
+ * so an untranslated "Save" or "Refresh" counts against coverage.
+ */
+const ALLOWLIST_WORDS = [
   'activitywatch',
   'discord',
   'github',
@@ -23,20 +56,6 @@ const ALLOWLIST_SUBSTRINGS = [
   'producthunt',
   'alternativeto',
   'opentelemetry',
-  'json',
-  'csv',
-  'api',
-  'host',
-  'bucket',
-  'watcher',
-  'afk',
-  'stopwatch',
-  'timespiral',
-  'devtools',
-  'devmode',
-  'hostname',
-  'http',
-  'forum',
   'liberapay',
   'opencollective',
   'mozilla',
@@ -49,52 +68,98 @@ const ALLOWLIST_SUBSTRINGS = [
   'npm',
   'vue',
   'pinia',
-  'id',
+  'timespiral',
+  'devtools',
+  'devmode',
+  'json',
+  'csv',
+  'api',
+  'http',
   'url',
+  'id',
+  'afk',
   'regex',
-  'score',
-  'timeline',
-  'graph',
-  'query',
-  'trends',
-  'report',
-  'search',
-  'settings',
-  'home',
-  'tools',
-  'theme',
-  'auto',
-  'light',
-  'dark',
-  'monday',
-  'saturday',
-  'sunday',
-  'version',
-  'experiment',
-  'wip',
-  'demo',
-  'cancel',
-  'save',
-  'open',
-  'more',
-  'delete',
-  'import',
-  'export',
-  'confirm',
-  'enabled',
-  'disabled',
-  'loading',
-  'refresh',
-  'options',
-  'filters',
-  'remove',
-  'start',
-  'end',
-  'running',
-  'history',
-  'documentation',
-  'website',
+  'vs',
+  'host',
+  'hostname',
+  'bucket',
+  'watcher',
 ];
+
+/** Per-locale values that are correctly identical to English (loanwords, proper terms). */
+const IDENTICAL_OK = {
+  ar: ['Buckets'],
+  de: [
+    'Name',
+    'Client:',
+    'Hosts',
+    'Buckets',
+    'Prompt',
+    'Swimlanes',
+    '(optional)',
+    'Trends',
+    'Graph',
+    'App',
+    'Version:',
+    'Forum',
+    'Score',
+    'Video',
+    'Audio',
+  ],
+  es: ['h', 's', 'General', 'Buckets', 'Hosts', 'Total', 'Prompt', 'Color', 'Audio'],
+  fr: [
+    'h',
+    's',
+    'Notifications',
+    'Type',
+    'Documentation',
+    'documentation',
+    'Forum',
+    'Buckets',
+    'Score',
+    'Options',
+    'Mode',
+    'Date',
+    'Sessions',
+    'Total',
+    'minutes',
+    'Parent',
+    'Image',
+    'Audio',
+  ],
+  hi: ['Buckets', 'All'],
+  id: [
+    'Stopwatch',
+    'Label',
+    'Forum',
+    'Filter AFK',
+    'Data:',
+    'Mode',
+    'Total',
+    'Model',
+    'Prompt',
+    'Valid',
+    'Video',
+    'Audio',
+    'Media',
+  ],
+  ja: ['Raw JSON'],
+  'pt-BR': ['App', 'h', 's', 'Buckets', 'Hosts', 'Total', 'Prompt', 'download'],
+  sv: [
+    'App',
+    'Version:',
+    'h',
+    's',
+    'Forum',
+    'Buckets',
+    'Data:',
+    'Period',
+    'Prompt',
+    'Video',
+    'Media',
+  ],
+  sw: ['h', 'm', 's', 'Buckets', 'Video'],
+};
 
 function loadLocale(code) {
   const filePath = path.join(LOCALES_DIR, `${code}.ts`);
@@ -125,14 +190,100 @@ function placeholders(s) {
 
 function isAllowlistedIdentical(enValue, targetValue) {
   if (enValue !== targetValue) return false;
-  const lower = enValue.toLowerCase();
-  if (enValue.length <= 3) return true;
-  return ALLOWLIST_SUBSTRINGS.some(sub => lower.includes(sub));
+  const words = enValue.toLowerCase().match(/[a-z]+/g) || [];
+  return words.every(word => ALLOWLIST_WORDS.includes(word));
+}
+
+function sourceFiles(dir) {
+  const files = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const filePath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...sourceFiles(filePath));
+    } else if (
+      /\.(vue|ts|js)$/.test(entry.name) &&
+      !filePath.includes(`${path.sep}i18n${path.sep}locales${path.sep}`)
+    ) {
+      files.push(filePath);
+    }
+  }
+  return files;
+}
+
+function usedStaticTranslationKeys() {
+  const keys = new Set();
+  const pattern = /\$(?:t|tc|te)\(\s*['"]([^'"]+)['"]/g;
+  for (const filePath of sourceFiles(SRC_DIR)) {
+    const source = fs.readFileSync(filePath, 'utf8');
+    for (const match of source.matchAll(pattern)) keys.add(match[1]);
+  }
+  return keys;
+}
+
+/**
+ * Locale lists that must stay sorted, so a new locale has exactly one insertion
+ * slot instead of every PR appending at the tail (and conflicting with each other).
+ */
+function localeOrderErrors() {
+  const source = fs.readFileSync(INDEX_PATH, 'utf8');
+  const block = (start, end) => {
+    const i = source.indexOf(start);
+    const j = i < 0 ? -1 : source.indexOf(end, i + start.length);
+    return j < 0 ? '' : source.slice(i + start.length, j);
+  };
+  const codes = (text, re) => [...text.matchAll(re)].map(m => m[1]);
+  const quoted = /'([\w-]+)'/g;
+  const keys = /^\s*'?([\w-]+)'?\s*[:,]/gm;
+  const lists = {
+    'moment locale imports': codes(source, /^import 'moment\/locale\/([\w-]+)';/gm),
+    'locale imports': codes(source, /^import \w+ from '\.\/locales\/([\w-]+)';/gm),
+    AppLocale: codes(block('export type AppLocale =', ';'), quoted),
+    SUPPORTED: codes(block('const SUPPORTED: AppLocale[] = [', '];'), quoted),
+    HTML_LANG: codes(block('const HTML_LANG: Record<AppLocale, string> = {', '};'), keys),
+    detectBrowserLocale: codes(
+      block('function detectBrowserLocale()', 'return null;\n}'),
+      /return '([\w-]+)';/g
+    ),
+    MOMENT_LOCALE: codes(block('const MOMENT_LOCALE: Record<AppLocale, string> = {', '};'), keys),
+    LANGUAGE_NAMES: codes(block('const LANGUAGE_NAMES: Record<AppLocale, string> = {', '};'), keys),
+    messages: codes(block('messages: {', '},'), keys),
+    RTL_LOCALES: codes(block('const RTL_LOCALES: AppLocale[] = [', '];'), quoted),
+    'IDENTICAL_OK in check-locales.mjs': Object.keys(IDENTICAL_OK),
+  };
+  const errors = [];
+  for (const [name, list] of Object.entries(lists)) {
+    if (!list.length) {
+      errors.push(`${name}: not found in src/i18n/index.ts (update this check)`);
+      continue;
+    }
+    const i = list.findIndex((code, k) => k > 0 && list[k - 1].localeCompare(code, 'en') > 0);
+    if (i > 0) errors.push(`${name}: '${list[i]}' must come before '${list[i - 1]}'`);
+  }
+  const supported = lists.SUPPORTED.join(', ');
+  if (supported !== LOCALES.join(', ')) {
+    errors.push(`SUPPORTED [${supported}] does not match the locale files [${LOCALES.join(', ')}]`);
+  }
+  return errors;
 }
 
 let failed = false;
+const coverage = [];
 
 const enFlat = flatten(loadLocale('en'));
+
+const orderErrors = localeOrderErrors();
+if (orderErrors.length) {
+  failed = true;
+  console.error(`\nLocale registrations out of alphabetical order (${orderErrors.length}):`);
+  orderErrors.forEach(e => console.error(`  - ${e}`));
+}
+
+const missingInEnglish = [...usedStaticTranslationKeys()].filter(key => !(key in enFlat));
+if (missingInEnglish.length) {
+  failed = true;
+  console.error(`\n[en] Missing keys used by source (${missingInEnglish.length}):`);
+  missingInEnglish.sort().forEach(key => console.error(`  - ${key}`));
+}
 
 for (const code of LOCALES) {
   if (code === 'en') continue;
@@ -143,11 +294,12 @@ for (const code of LOCALES) {
   const missing = [...enKeys].filter(k => !keys.has(k));
   const extra = [...keys].filter(k => !enKeys.has(k));
 
-  if (missing.length) {
+  const requiredMissing = missing.filter(k => !ENGLISH_FALLBACK_KEYS.has(k));
+  if (requiredMissing.length) {
     failed = true;
-    console.error(`\n[${code}] Missing keys (${missing.length}):`);
-    missing.slice(0, 20).forEach(k => console.error(`  - ${k}`));
-    if (missing.length > 20) console.error(`  ... and ${missing.length - 20} more`);
+    console.error(`\n[${code}] Missing keys (${requiredMissing.length}):`);
+    requiredMissing.slice(0, 20).forEach(k => console.error(`  - ${k}`));
+    if (requiredMissing.length > 20) console.error(`  ... and ${requiredMissing.length - 20} more`);
   }
   if (extra.length) {
     failed = true;
@@ -165,8 +317,11 @@ for (const code of LOCALES) {
     if (placeholders(enVal) !== placeholders(val)) {
       placeholderMismatches.push({ key, en: placeholders(enVal), got: placeholders(val) });
     }
-    if (key.startsWith('common.language')) continue;
-    if (enVal === val && !isAllowlistedIdentical(enVal, val)) {
+    if (
+      enVal === val &&
+      !isAllowlistedIdentical(enVal, val) &&
+      !IDENTICAL_OK[code]?.includes(val)
+    ) {
       untranslated.push(key);
     }
   }
@@ -181,15 +336,26 @@ for (const code of LOCALES) {
 
   if (untranslated.length) {
     console.warn(`\n[${code}] Possibly untranslated (identical to en, ${untranslated.length}):`);
-    untranslated
-      .slice(0, 15)
-      .forEach(k => console.warn(`  - ${k}: "${enFlat[k].slice(0, 60)}..."`));
-    if (untranslated.length > 15) console.warn(`  ... and ${untranslated.length - 15} more`);
+    const shown = verbose ? untranslated : untranslated.slice(0, 15);
+    shown.forEach(k => console.warn(`  - ${k}: "${enFlat[k].slice(0, 60)}..."`));
+    if (untranslated.length > shown.length) {
+      console.warn(`  ... and ${untranslated.length - shown.length} more (use --verbose)`);
+    }
   }
+
+  const translated = enKeys.size - missing.length - untranslated.length;
+  coverage.push({ code, translated, total: enKeys.size });
 }
 
 const enCount = Object.keys(enFlat).length;
 console.log(`\nChecked ${LOCALES.join(', ')} — ${enCount} keys in en.`);
+console.log('\nTranslation coverage (missing or identical to en counts as untranslated):');
+for (const { code, translated, total } of coverage) {
+  const pct = ((100 * translated) / total).toFixed(1);
+  console.log(
+    `  ${code.padEnd(6)} ${String(translated).padStart(4)}/${total}  ${pct.padStart(5)}%`
+  );
+}
 
 if (failed) {
   console.error('\nLocale check FAILED.\n');

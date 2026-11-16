@@ -5,23 +5,23 @@ div.vis-card(:class="{'vis-card--editable': editable}", v-if="editable || !activ
     | {{ visualizations[type].title }}
   div(v-if="editable").vis-style-dropdown-btn
     b-dropdown.mr-1(size="sm" variant="outline-secondary" right)
-      template(v-slot:button-content)
+      template(v-slot:button-content="")
         icon(name="cog")
       b-dropdown-item(v-for="t in types" :key="t" variant="outline-secondary" @click="$emit('onTypeChange', id, t)")
-        | {{ visualizations[t].title }} #[span.small.text-warning(v-if="!visualizations[t].available") (no data)]
+        | {{ visualizations[t].title }} #[span.small.text-warning(v-if="!visualizations[t].available") {{ $t('visualizations.noData') }}]
     b-button.p-0(size="sm", variant="outline-danger" @click="$emit('onRemove', id)")
       icon(name="times")
 
   div(v-if="!supports_period")
     b-alert.small.px-2.py-1(show variant="warning")
-      | This feature doesn't support the current time period.
+      | {{ $t('visualizations.unsupportedPeriod') }}
 
   div(v-if="activityStore.buckets.loaded")
     // Check data prerequisites
     div(v-if="!has_prerequisites")
       b-alert.small.px-2.py-1(show variant="warning")
-        | This feature is missing data from a required watcher.
-        | You can find a list of all watchers in #[a(href="https://docs.activitywatch.net/en/latest/watchers.html") the documentation].
+        | {{ $t('visualizations.missingWatcher') }}
+        | #[a(href="https://docs.activitywatch.net/en/latest/watchers.html") {{ $t('visualizations.docLink') }}]
 
     div(v-if="type == 'top_apps'")
       aw-summary(:fields="activityStore.window.top_apps",
@@ -75,7 +75,7 @@ div.vis-card(:class="{'vis-card--editable': editable}", v-if="editable || !activ
                  with_limit)
     div(v-if="type == 'top_categories'")
       aw-summary(:fields="activityStore.category.top",
-                 :namefunc="e => e.data['$category'].join(' > ')",
+                 :namefunc="e => categoryPathLabel(e.data['$category'])",
                  :colorfunc="e => e.data['$category']",
                  :linkfunc="e => '#' + $route.path + '?category=' + encodeURIComponent(e.data['$category'].join('>'))",
                  with_limit)
@@ -115,8 +115,8 @@ div.vis-card(:class="{'vis-card--editable': editable}", v-if="editable || !activ
       aw-sunburst-categories(:data="top_categories_hierarchy", style="height: 20em")
     div(v-if="type == 'timeline_barchart'")
       aw-timeline-barchart(:datasets="datasets", :timeperiod_start="activityStore.query_options.timeperiod.start", :timeperiod_length="activityStore.query_options.timeperiod.length", :clamp_hourly="true", style="height: 100")
-    div(v-if="type == 'sunburst_clock'")
-      aw-sunburst-clock(:date="date", :afkBucketId="activityStore.buckets.afk[0]", :windowBucketId="activityStore.buckets.window[0]")
+    div(v-if="type == 'sunburst_clock' && isSingleDay")
+      aw-sunburst-clock(:date="activityStore.query_options.timeperiod.start", :afkBucketId="activityStore.buckets.afk[0]", :windowBucketId="activityStore.buckets.window[0]")
     div(v-if="type == 'custom_vis'")
       aw-custom-vis(:visname="props.visname" :title="props.title")
     div(v-if="type == 'vis_timeline' && isSingleDay")
@@ -133,6 +133,7 @@ div.vis-card(:class="{'vis-card--editable': editable}", v-if="editable || !activ
         :initialBucketId="props ? props.bucketId : ''",
         :initialField="props ? props.field : ''",
         :initialCustomField="props ? props.customField : ''",
+        :disabled="disabled",
         @update-props="onWatcherPropsChange"
       )
 </template>
@@ -166,6 +167,8 @@ import { useBucketsStore } from '~/stores/buckets';
 import { useViewsStore } from '~/stores/views';
 import { useSettingsStore } from '~/stores/settings';
 import { isBrowserAllowlistMiss } from '~/util/browserAllowlist';
+import { isExactTimeperiod } from '~/util/timeperiod';
+import { categoryPathLabel } from '~/util/categoryLabels';
 
 import moment from 'moment';
 
@@ -183,6 +186,7 @@ export default {
     props: Object,
     viewId: { type: String, default: '' },
     editable: { type: Boolean, default: true },
+    disabled: { type: Boolean, default: false },
   },
   data: function () {
     return {
@@ -244,51 +248,51 @@ export default {
     visualizations: function () {
       return {
         top_apps: {
-          title: 'Top Applications',
+          title: this.$t('visualizations.topApps'),
           available: this.activityStore.window.available || this.activityStore.android.available,
         },
         top_titles: {
-          title: 'Top Window Titles',
+          title: this.$t('visualizations.topTitles'),
           available: this.activityStore.window.available,
         },
         top_bundle_ids: {
-          title: 'Bundle IDs',
+          title: this.$t('ui.visualizations.bundleIds'),
           available: this.activityStore.ios.available,
         },
         top_domains: {
-          title: 'Top Browser Domains',
+          title: this.$t('visualizations.topDomains'),
           available: this.activityStore.browser.available,
         },
         top_urls: {
-          title: 'Top Browser URLs',
+          title: this.$t('visualizations.topUrls'),
           available: this.activityStore.browser.available,
         },
         top_browser_titles: {
-          title: 'Top Browser Titles',
+          title: this.$t('visualizations.topBrowserTitles'),
           available: this.activityStore.browser.available,
         },
         top_editor_files: {
-          title: 'Top Editor Files',
+          title: this.$t('visualizations.topEditorFiles'),
           available: this.activityStore.editor.available,
         },
         top_editor_languages: {
-          title: 'Top Editor Languages',
+          title: this.$t('visualizations.topEditorLanguages'),
           available: this.activityStore.editor.available,
         },
         top_editor_projects: {
-          title: 'Top Editor Projects',
+          title: this.$t('visualizations.topEditorProjects'),
           available: this.activityStore.editor.available,
         },
         top_categories: {
-          title: 'Top Categories',
+          title: this.$t('visualizations.topCategories'),
           available: this.activityStore.category.available,
         },
         category_tree: {
-          title: 'Category Tree',
+          title: this.$t('visualizations.categoryTree'),
           available: this.activityStore.category.available,
         },
         category_sunburst: {
-          title: 'Category Sunburst',
+          title: this.$t('visualizations.categorySunburst'),
           available: this.activityStore.category.available,
         },
         category_donut: {
@@ -324,31 +328,31 @@ export default {
           available: true,
         },
         timeline_barchart: {
-          title: 'Timeline (barchart)',
+          title: this.$t('visualizations.timelineBarchart'),
           available: true,
         },
         sunburst_clock: {
-          title: 'Sunburst clock',
+          title: this.$t('visualizations.sunburstClock'),
           available: this.activityStore.window.available && this.activityStore.active.available,
         },
         vis_timeline: {
-          title: 'Daily Timeline (Chronological)',
+          title: this.$t('visualizations.dailyTimeline'),
           available: true,
         },
         custom_vis: {
-          title: 'Custom Visualization',
+          title: this.$t('visualizations.customVis'),
           available: true, // TODO: Implement
         },
         score: {
-          title: 'Score',
+          title: this.$t('visualizations.score'),
           available: this.activityStore.category.available,
         },
         top_stopwatches: {
-          title: 'Top Stopwatch Events',
+          title: this.$t('visualizations.topStopwatches'),
           available: this.activityStore.stopwatch.available,
         },
         top_bucket_data: {
-          title: 'Top Bucket Data',
+          title: this.$t('visualizations.topBucketData'),
           available: true,
         },
       };
@@ -405,6 +409,8 @@ export default {
     },
     timeline_daterange: function () {
       if (this.activityStore.query_options === null) return null;
+      // The timeline only supports whole days; never fetch a full day for an exact interval
+      if (isExactTimeperiod(this.activityStore.query_options.timeperiod)) return null;
 
       let date = this.activityStore.query_options.date;
       if (!date) {
@@ -431,8 +437,9 @@ export default {
     }
   },
   methods: {
+    categoryPathLabel,
     onWatcherPropsChange(newProps) {
-      if (!this.viewId) return;
+      if (!this.viewId || this.disabled) return;
       const mergedProps = { ...(this.props || {}), ...newProps };
       useViewsStore().editView({
         view_id: this.viewId,

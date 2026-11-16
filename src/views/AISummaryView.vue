@@ -1,29 +1,26 @@
 <template lang="pug">
 div
-  h3.mb-3 AI Activity Summary
+  h3.mb-3 {{ $t('ui.aiSummary.title') }}
 
   b-alert(variant="info" show)
-    | Your API key is kept only in this page's memory and sent directly to the LLM provider.
-    |  It is cleared when the page reloads and ActivityWatch does not receive it.
-    |  For deeper analysis with agents, see the
-    |  #[a(href="https://docs.activitywatch.net/en/latest/examples/agents-and-ai.html") ActivityWatch agents and AI guide].
+    | {{ $t('ui.aiSummary.privacy') }}
 
   div.row.mb-3
     div.col-md-4
-      b-form-group(label="Host" label-class="font-weight-bold")
+      b-form-group(:label="$t('ui.aiSummary.host')" label-class="font-weight-bold")
         b-form-select(v-model="selectedHost" :options="hostOptions")
 
     div.col-md-4
-      b-form-group(label="Date Range" label-class="font-weight-bold")
+      b-form-group(:label="$t('ui.aiSummary.dateRange')" label-class="font-weight-bold")
         b-form-select(v-model="dateRange" :options="dateRangeOptions")
 
     div.col-md-4
-      b-form-group(label="LLM Provider" label-class="font-weight-bold")
+      b-form-group(:label="$t('ui.aiSummary.provider')" label-class="font-weight-bold")
         b-form-select(v-model="provider" :options="providerOptions" @change="onProviderChange")
 
   div.row.mb-3
     div.col-md-6
-      b-form-group(label="API Key" label-class="font-weight-bold")
+      b-form-group(:label="$t('ui.aiSummary.apiKey')" label-class="font-weight-bold")
         b-form-input(
           v-model="apiKey"
           type="password"
@@ -33,36 +30,35 @@ div
         )
 
     div.col-md-6
-      b-form-group(label="Model" label-class="font-weight-bold")
+      b-form-group(:label="$t('ui.aiSummary.model')" label-class="font-weight-bold")
         b-form-input(v-model="model" placeholder="e.g. gpt-4o-mini" @blur="persistConfig")
 
   div.mb-3
-    b-form-group(label="Privacy" label-class="font-weight-bold")
+    b-form-group(:label="$t('ui.aiSummary.privacyTitle')" label-class="font-weight-bold")
       b-form-checkbox(v-model="excludeUncategorized")
-        | Exclude uncategorized activity
+        | {{ $t('ui.aiSummary.excludeUncategorized') }}
       b-form-checkbox(v-model="excludePrivateCategories")
-        | Exclude categories marked private
+        | {{ $t('ui.aiSummary.excludePrivate') }}
         span.text-muted.ml-1(v-if="privateCategories.length")
           | ({{ privateCategories.map(c => c.join(' > ')).join(', ') }})
         span.text-muted.ml-1(v-else)
-          | (none marked yet — set #[code private: true] in a category's data)
+          | ({{ $t('ui.aiSummary.noPrivateCategories') }} — #[code private: true])
       small.text-muted
-        | Browser domains are omitted entirely while either filter is on, since browser
-        |  events carry no category and cannot be filtered by it.
+        | {{ $t('ui.aiSummary.browserPrivacyHelp') }}
 
   div.mb-3
-    b-form-group(label="Prompt" label-class="font-weight-bold")
+    b-form-group(:label="$t('ui.aiSummary.prompt')" label-class="font-weight-bold")
       b-form-textarea(v-model="userPrompt" rows="3" max-rows="8")
 
   div.mb-4
     b-button(@click="generate" variant="primary" :disabled="loading || !apiKey || !selectedHost")
       b-spinner.mr-2(v-if="loading" small)
-      | {{ loading ? 'Generating…' : 'Generate Summary' }}
+      | {{ loading ? $t('ui.aiSummary.generating') : $t('ui.aiSummary.generate') }}
     b-button.ml-2(
       v-if="aggregatedText"
       variant="outline-secondary"
       @click="dataVisible = !dataVisible"
-    ) {{ dataVisible ? 'Hide context' : 'Show context sent' }}
+    ) {{ dataVisible ? $t('ui.aiSummary.hideRaw') : $t('ui.aiSummary.showRaw') }}
 
   b-alert(v-if="error" variant="danger" show dismissible @dismissed="error = ''")
     | {{ error }}
@@ -70,17 +66,17 @@ div
   div(v-if="dataVisible && aggregatedText")
     b-card.mb-3
       template(slot="header")
-        strong Exact context sent to the LLM
+        strong {{ $t('ui.aiSummary.rawData') }}
       pre.mb-0(style="white-space: pre-wrap; font-size: 0.85em") {{ aggregatedText }}
 
   div(v-if="llmResponse")
     b-card
       template(slot="header")
         div.d-flex.justify-content-between.align-items-center
-          strong AI Summary
+          strong {{ $t('ui.aiSummary.title') }}
           b-button(size="sm" variant="outline-secondary" @click="copyResponse")
             icon(name="copy")
-            |  {{ copied ? 'Copied!' : 'Copy' }}
+            |  {{ copied ? $t('ui.aiSummary.copied') : $t('ui.aiSummary.copy') }}
       div(style="white-space: pre-wrap") {{ llmResponse }}
 </template>
 
@@ -88,7 +84,7 @@ div
 import { useBucketsStore } from '~/stores/buckets';
 import { useCategoryStore } from '~/stores/categories';
 import { getClient } from '~/util/awclient';
-import { analysisContextQuery } from '~/queries';
+import { analysisContextQuery, type DesktopQueryParams } from '~/queries';
 import { loadLLMConfig, saveLLMConfig, callLLM, type LLMProvider } from '~/util/aiSummary';
 import {
   buildActivityContext,
@@ -101,6 +97,23 @@ import 'vue-awesome/icons/copy';
 const DEFAULT_PROMPT =
   'Based on the following activity data, provide a concise summary of how I spent my time. ' +
   'Highlight the main activities, identify focus areas, and suggest any observations about productivity patterns.';
+
+interface SummaryInvocation {
+  host: string;
+  days: number;
+  provider: LLMProvider;
+  apiKey: string;
+  model: string;
+  prompt: string;
+  excludeUncategorized: boolean;
+  privateCategories: CategoryName[];
+  excludePrivateCategories: boolean;
+  categories: DesktopQueryParams['categories'];
+  windowBucketId: string;
+  afkBucketId: string;
+  browserBuckets: string[];
+  browserFallbackUsed: boolean;
+}
 
 export default {
   name: 'AISummaryView',
@@ -120,6 +133,7 @@ export default {
       excludePrivateCategories: true,
 
       loading: false,
+      invocationVersion: 0,
       error: '',
       aggregatedText: '',
       llmResponse: '',
@@ -144,9 +158,9 @@ export default {
     },
     dateRangeOptions() {
       return [
-        { value: 'last7d', text: 'Last 7 days' },
-        { value: 'last30d', text: 'Last 30 days' },
-        { value: 'last90d', text: 'Last 90 days' },
+        { value: 'last7d', text: this.$t('common.last7d') },
+        { value: 'last30d', text: this.$t('common.last30d') },
+        { value: 'last90d', text: this.$t('common.last90d') },
       ];
     },
     providerOptions() {
@@ -165,6 +179,44 @@ export default {
       if (this.provider === 'anthropic') return 'claude-haiku-4-5-20251001';
       return 'gpt-4o-mini';
     },
+    invocationInputs(): SummaryInvocation {
+      const host = this.selectedHost;
+      const afkBucket = (this.bucketsStore.buckets || []).find(
+        b => b.type === 'afkstatus' && b.hostname === host
+      );
+      const browserBuckets = this.bucketsStore.bucketsBrowser(host);
+      return {
+        host,
+        days: this.periodDays,
+        provider: this.provider,
+        apiKey: this.apiKey,
+        model: this.model,
+        prompt: this.userPrompt,
+        excludeUncategorized: this.excludeUncategorized,
+        privateCategories: this.privateCategories,
+        excludePrivateCategories: this.excludePrivateCategories,
+        categories: this.categoryStore.classes_for_query,
+        windowBucketId: this.bucketsStore.bucketsWindow(host)[0] || '',
+        afkBucketId: afkBucket ? afkBucket.id : '',
+        browserBuckets,
+        browserFallbackUsed:
+          browserBuckets.length > this.bucketsStore.bucketsByType(host, 'web.tab.current').length,
+      };
+    },
+  },
+  watch: {
+    // A privacy tightening must cancel, not be bypassed by an earlier snapshot.
+    // Deep observation also catches in-place category/rule edits. The version
+    // makes invalidation sticky if a user edits and then restores a control.
+    invocationInputs: {
+      deep: true,
+      handler() {
+        this.invalidateInvocation();
+      },
+    },
+  },
+  beforeDestroy() {
+    this.invalidateInvocation();
   },
   async mounted() {
     await this.bucketsStore.ensureLoaded();
@@ -194,55 +246,71 @@ export default {
         model: this.model,
       });
     },
+    invalidateInvocation() {
+      this.invocationVersion++;
+      this.error = '';
+      this.llmResponse = '';
+      this.aggregatedText = '';
+      this.dataVisible = false;
+      this.copied = false;
+    },
     async generate() {
+      if (this.loading) return;
       this.error = '';
       this.llmResponse = '';
       this.aggregatedText = '';
 
       if (!this.selectedHost) {
-        this.error = 'No host with a window-watcher bucket found.';
+        this.error = this.$t('ui.aiSummary.noHost');
         return;
       }
       if (!this.apiKey.trim()) {
-        this.error = 'Please enter your LLM API key.';
+        this.error = this.$t('ui.aiSummary.apiKeyRequired');
         return;
       }
 
+      // Detach nested category names/rules and private lists from mutable stores.
+      const serializedInputs = JSON.stringify(this.invocationInputs);
+      const invocation: SummaryInvocation = JSON.parse(serializedInputs);
+      const version = this.invocationVersion;
+      // The comparison also catches edits before Vue's batched watcher runs.
+      const isCurrent = () =>
+        version === this.invocationVersion &&
+        serializedInputs === JSON.stringify(this.invocationInputs);
       this.loading = true;
       try {
-        const summaryText = await this.buildContextText();
+        const summaryText = await this.buildContextText(invocation);
+        if (!isCurrent()) return;
         this.aggregatedText = summaryText;
 
-        const fullPrompt = `${this.userPrompt}\n\n${summaryText}`;
-        const effectiveModel = this.model.trim() || this.defaultModel;
+        const fullPrompt = `${invocation.prompt}\n\n${summaryText}`;
+        const effectiveModel =
+          invocation.model.trim() ||
+          (invocation.provider === 'anthropic' ? 'claude-haiku-4-5-20251001' : 'gpt-4o-mini');
 
         const response = await callLLM(
           {
-            provider: this.provider,
-            apiKey: this.apiKey.trim(),
+            provider: invocation.provider,
+            apiKey: invocation.apiKey.trim(),
             model: effectiveModel,
           },
           fullPrompt
         );
-        this.llmResponse = response;
+        if (isCurrent()) this.llmResponse = response;
       } catch (err: any) {
-        this.error = err?.message || String(err);
+        if (isCurrent()) this.error = err?.message || String(err);
       } finally {
         this.loading = false;
       }
     },
-    async buildContextText(): Promise<string> {
-      const buckets = this.bucketsStore.buckets || [];
+    async buildContextText(invocation: SummaryInvocation = this.invocationInputs): Promise<string> {
       // Use the store's bucketsWindow() filter: it excludes aw-watcher-android
       // buckets which share the 'currentwindow' type but sort before the desktop
       // watcher, so a naive find() could silently select an Android bucket.
-      const windowBucketId = this.bucketsStore.bucketsWindow(this.selectedHost)[0];
+      const windowBucketId = invocation.windowBucketId;
       if (!windowBucketId) {
-        throw new Error(`No window-watcher bucket found for host: ${this.selectedHost}`);
+        throw new Error(`No window-watcher bucket found for host: ${invocation.host}`);
       }
-      const afkBucket = buckets.find(
-        b => b.type === 'afkstatus' && b.hostname === this.selectedHost
-      );
       // Only include browser buckets for the selected host; mixing buckets from
       // other hosts would send another device's domains to the LLM under the
       // selected host's summary. Use bucketsBrowser() rather than an inline
@@ -254,24 +322,21 @@ export default {
       // (dropping it would lose all browser data on older single-device setups)
       // but disclose it explicitly in the context text below, so the user sees
       // exactly what is being sent in the preview before it reaches the LLM.
-      const browserBuckets = this.bucketsStore.bucketsBrowser(this.selectedHost);
-      // Fallback buckets are those the strict per-host getter added on top of the
-      // exact-host ones (i.e. 'unknown'-hostname buckets).
-      const browserFallbackUsed =
-        browserBuckets.length >
-        this.bucketsStore.bucketsByType(this.selectedHost, 'web.tab.current').length;
+      const browserBuckets = invocation.browserBuckets;
+      // Fallback attribution is captured with the bucket IDs, before the query.
+      const browserFallbackUsed = invocation.browserFallbackUsed;
 
       const end = new Date();
-      const start = new Date(end.getTime() - this.periodDays * 24 * 60 * 60 * 1000);
+      const start = new Date(end.getTime() - invocation.days * 24 * 60 * 60 * 1000);
 
       // Query-side AFK filtering and categorization: only derived statistics
       // (never raw titles or URLs) are exported from the result below.
       const query = analysisContextQuery({
         bid_window: windowBucketId,
-        bid_afk: afkBucket ? afkBucket.id : '',
+        bid_afk: invocation.afkBucketId,
         bid_browsers: browserBuckets,
-        filter_afk: Boolean(afkBucket),
-        categories: this.categoryStore.classes_for_query,
+        filter_afk: Boolean(invocation.afkBucketId),
+        categories: invocation.categories,
         filter_categories: [],
       });
       const [result] = await getClient().query([{ start, end }], query);
@@ -282,11 +347,13 @@ export default {
         trackedSeconds: result.tracked_duration || 0,
         start,
         end,
-        hosts: [this.selectedHost],
+        hosts: [invocation.host],
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         privacy: {
-          excludeUncategorized: this.excludeUncategorized,
-          privateCategories: this.excludePrivateCategories ? this.privateCategories : [],
+          excludeUncategorized: invocation.excludeUncategorized,
+          privateCategories: invocation.excludePrivateCategories
+            ? invocation.privateCategories
+            : [],
         },
       });
       const text = formatActivityContext(context);
@@ -307,7 +374,7 @@ export default {
           this.copied = false;
         }, 2000);
       } catch {
-        this.error = 'Could not copy to clipboard';
+        this.error = this.$t('ui.aiSummary.copyError');
       }
     },
   },

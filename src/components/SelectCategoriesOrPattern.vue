@@ -4,28 +4,26 @@ div
   // Either let the user choose which of the existing categories to include, or use a custom regex.
   b-form-group
     b-form-select(v-model="mode")
-      option(value="custom") Custom regex
-      option(value="categories") Use existing categories
+      option(value="custom") {{ $t('ui.selectCategories.customRegex') }}
+      option(value="categories") {{ $t('ui.selectCategories.useExisting') }}
 
   // select which categories, by having a form select and a "plus" button to include them
   b-input-group
     aw-select-categories(v-if="mode == 'categories'", v-model="filterCategoriesData")
-    b-input(v-if="mode == 'custom'" v-model="pattern" v-on:keyup.enter="generate()" placeholder="Regex pattern to search for")
+    b-input(v-if="mode == 'custom'" v-model="pattern" v-on:keyup.enter="generate()" :placeholder="$t('ui.search.regexPlaceholder')")
     b-input-group-append
       slot(name="input-group-append")
 </template>
 
 <script lang="ts">
-import Vue from 'vue';
+import Vue, { PropType } from 'vue';
 import { useCategoryStore } from '~/stores/categories';
-
-const SEP = ' > ';
 
 export default Vue.extend({
   name: 'SelectCategoriesOrPattern',
   props: {
     filterCategories: {
-      type: Array,
+      type: Array as PropType<string[][]>,
       default: () => [],
     },
   },
@@ -33,7 +31,7 @@ export default Vue.extend({
     return {
       mode: 'categories',
       pattern: '',
-      filterCategoriesData: [],
+      filterCategoriesData: this.filterCategories.map(path => [...path]),
     };
   },
   computed: {
@@ -45,15 +43,14 @@ export default Vue.extend({
       if (this.mode === 'categories') {
         // Get the category and all subcategories
         return this.categories
-          .filter(cat => {
-            const name = cat.name.join(SEP);
-            for (const filterCat of this.filterCategoriesData) {
-              if (name.includes(filterCat.join(SEP))) {
-                return true;
-              }
-            }
-            return false;
-          })
+          .filter(cat =>
+            this.filterCategoriesData.some(
+              path =>
+                path.length > 0 &&
+                path.length <= cat.name.length &&
+                path.every((segment, index) => segment === cat.name[index])
+            )
+          )
           .filter(cat => cat.rule.type === 'regex')
           .map(cat => [cat.name, cat.rule]);
       } else if (this.mode === 'custom') {
@@ -65,16 +62,14 @@ export default Vue.extend({
     },
   },
   watch: {
-    filterCategories() {
-      this.filterCategoriesData = [...this.filterCategoriesData, ...this.filterCategories];
+    filterCategories(paths: string[][]) {
+      this.filterCategoriesData = paths.map(path => [...path]);
     },
-    filterCategoriesData() {
-      this.$emit('input', this.categoriesWithRules);
-      console.log(this.categoriesWithRules);
-    },
-    pattern() {
-      this.$emit('input', this.categoriesWithRules);
-      console.log(this.categoriesWithRules);
+    categoriesWithRules: {
+      immediate: true,
+      handler(rules) {
+        this.$emit('input', rules);
+      },
     },
   },
   async mounted() {

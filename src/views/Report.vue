@@ -1,35 +1,35 @@
 <template lang="pug">
 div
-  h3 Report
+  h3 {{ $t('report.title') }}
 
-  | Generate a report of time spent on a certain category of device activity.
+  | {{ $t('report.description') }}
 
   b-alert.mt-2(variant="warning" show)
-    | This feature is still in early development.
+    | {{ $t('report.earlyDev') }}
 
   b-alert(v-if="error" show variant="danger")
     | {{error}}
 
   aw-select-categories-or-pattern(v-model="filterCategories")
-    template(v-slot:input-group-append)
+    template(v-slot:input-group-append="")
       b-button(type="button", @click="generate()" variant="success" :disabled="!has_pattern")
         icon(name="search")
-        | Generate
+        | {{ $t('report.generate') }}
 
   div.d-flex.mt-1
-    span.mr-auto.small.text-muted Hostname: {{queryOptions.hostname}}
+    span.mr-auto.small.text-muted {{ $t('ui.search.hostname') }}: {{queryOptions.hostname}}
     b-button.border-0(size="sm", variant="outline-dark" @click="show_options = !show_options")
       span(v-if="!show_options")
-        | #[icon(name="angle-double-down")] Show options
+        | #[icon(name="angle-double-down")] {{ $t('ui.search.showOptions') }}
       span(v-else)
-        | #[icon(name="angle-double-up")] Hide options
+        | #[icon(name="angle-double-up")] {{ $t('ui.search.hideOptions') }}
 
   div(v-show="show_options")
-    h4 Options
+    h4 {{ $t('report.options') }}
     aw-query-options(v-model="queryOptions")
 
   div(v-if="status == 'searching'")
-    div #[icon(name="spinner" pulse)] Searching...
+    div #[icon(name="spinner" pulse)] {{ $t('ui.search.searching') }}
 
 
   div(v-if="events != null")
@@ -37,28 +37,28 @@ div
 
     div.d-flex
       div.flex-fill
-        | Found {{ events.length }} events in {{ (queryTime / 1000).toFixed(2) }} seconds
+        | {{ $t('report.foundEvents', { count: events.length, seconds: (queryTime / 1000).toFixed(2) }) }}
       div
         b-input-group(size="sm")
           b-input-group-prepend
             b-input-group-text
               icon(name="save")
-              .mx-1 Export as:
+              .mx-1 {{ $t('ui.report.exportAs') }}
           b-input-group-append
             b-button(type="button", @click="export_csv()" variant="outline-dark")
-              | CSV
+              | {{ $t('report.csv') }}
             b-button(type="button", @click="export_json()" variant="outline-dark")
-              | JSON
+              | {{ $t('ui.report.json') }}
 
     hr
 
     vis-timeline(:events="events.slice(0, 500)" filterShortEvents=true)
     div.small.text-muted(v-if="events.length > 500")
-      | Showing the {{ 500 }} most recent events of {{ events.length }} total.
+      | {{ $t('ui.report.recentEvents', { shown: 500, total: events.length }) }}
 
     hr
 
-    aw-timeline-barchart(:datasets="datasets" :height="100")
+    aw-timeline-barchart(v-if="datasets.length" :datasets="datasets" :timeperiod_start="result.period.start" :timeperiod_length="result.period.length" :height="100")
 
     hr
 
@@ -67,9 +67,9 @@ div
     hr
 
     div
-      | Didn't find what you were looking for?
+      | {{ $t('search.notFound') }}
       br
-      | Add a week to the search: #[b-button(size="sm" variant="outline-dark" @click="extendByWeek()") +1 week]
+      | {{ $t('search.addWeek') }} #[b-button(size="sm" variant="outline-dark" @click="extendByWeek()") {{ $t('search.addWeekBtn') }}]
 
 </template>
 
@@ -78,7 +78,6 @@ div
 <script lang="ts">
 import _ from 'lodash';
 import moment from 'moment';
-import Papa from 'papaparse';
 
 import 'vue-awesome/icons/search';
 import 'vue-awesome/icons/spinner';
@@ -86,24 +85,24 @@ import 'vue-awesome/icons/angle-double-down';
 import 'vue-awesome/icons/angle-double-up';
 
 import { canonicalEvents, querystr_to_array } from '~/queries';
-import { buildBarchartDataset } from '~/util/datasets';
+import { reportChartDatasets } from '~/util/reportChart';
+import { TimePeriod } from '~/util/timeperiod';
 
-import { useActivityStore } from '~/stores/activity';
 import { useCategoryStore } from '~/stores/categories';
 import { useBucketsStore } from '~/stores/buckets';
 
 import { getClient } from '~/util/awclient';
-import { downloadFile } from '~/util/export';
+import { downloadFile, reportEventsCsv } from '~/util/export';
 
 export default {
   name: 'Report',
   data() {
     return {
-      activityStore: useActivityStore(),
       categoryStore: useCategoryStore(),
       bucketsStore: useBucketsStore(),
 
-      events: null,
+      result: null,
+      generation: 0,
 
       status: null,
       queryTime: null,
@@ -119,11 +118,11 @@ export default {
     has_pattern: function () {
       return this.filterCategories.length > 0;
     },
+    events: function () {
+      return this.result ? this.result.events : null;
+    },
     datasets: function () {
-      return buildBarchartDataset(
-        this.activityStore.category.by_period,
-        this.categoryStore.classes
-      );
+      return this.result ? this.result.datasets : [];
     },
   },
   mounted: async function () {
@@ -131,31 +130,46 @@ export default {
   },
   methods: {
     generate: async function () {
-      // TODO: use full query (one per day/timeperiod) instead of canonicalEvents
-      let query = canonicalEvents({
-        ...this.bucketsStore.desktopBucketIds(this.queryOptions.hostname),
-        filter_afk: this.queryOptions.filter_afk,
-        categories: this.filterCategories,
-        filter_categories: this.filterCategories.map(c => c[0]),
-      });
-      query += '; RETURN = events;';
-
-      const query_array = querystr_to_array(query);
-      const start = moment(this.queryOptions.start).format();
-      const end = moment(this.queryOptions.stop).format();
-      const timeperiods = [start + '/' + end];
+      const generation = ++this.generation;
+      this.status = 'searching';
+      const time = moment();
       try {
-        this.status = 'searching';
-        const time = moment();
-        const data = await getClient().query(timeperiods, query_array);
-        this.events = _.orderBy(data[0], ['timestamp'], ['desc']);
+        // Controls remain editable; all result data belongs to this resolved request.
+        const options = _.cloneDeep(this.queryOptions);
+        const categories = _.cloneDeep(this.filterCategories);
+        const classes = _.cloneDeep(this.categoryStore.classes);
+        const start = moment(options.start);
+        const end = moment(options.stop);
+        if (!start.isValid() || !end.isValid() || !end.isAfter(start)) {
+          throw new Error('Report end must be after its start.');
+        }
+        const period: TimePeriod = {
+          start: start.format(),
+          length: [end.diff(start), 'milliseconds'],
+        };
+        let query = canonicalEvents({
+          ...this.bucketsStore.desktopBucketIds(options.hostname),
+          filter_afk: options.filter_afk,
+          categories,
+          filter_categories: categories.map(c => c[0]),
+        });
+        query += '; RETURN = events;';
+        const data = await getClient().query(
+          [start.format() + '/' + end.format()],
+          querystr_to_array(query)
+        );
+        if (generation !== this.generation) return;
+        const events = _.orderBy(data[0], ['timestamp'], ['desc']);
+        const datasets = reportChartDatasets(events, period, classes);
+        this.result = { events, datasets, period };
         this.error = '';
         this.queryTime = moment().diff(time);
       } catch (e) {
+        if (generation !== this.generation) return;
         console.error(e);
-        this.error = e.response.data.message;
+        this.error = e?.response?.data?.message || e?.message || this.$t('common.requestFailed');
       } finally {
-        this.status = null;
+        if (generation === this.generation) this.status = null;
       }
     },
 
@@ -165,13 +179,7 @@ export default {
     },
 
     async export_csv() {
-      const data = this.events.map(e => {
-        return [e.timestamp, e.duration, e.data['$category'], e.data['app'], e.data['title']];
-      });
-      const csv = Papa.unparse(data, {
-        columns: ['timestamp', 'duration', 'category', 'app', 'title'],
-      });
-      await downloadFile('events.csv', csv, 'text/csv');
+      await downloadFile('events.csv', reportEventsCsv(this.events), 'text/csv');
     },
 
     extendByWeek() {

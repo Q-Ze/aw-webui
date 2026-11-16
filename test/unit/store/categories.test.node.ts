@@ -2,7 +2,13 @@ import { isEqual } from 'lodash';
 import { setActivePinia, createPinia } from 'pinia';
 
 import { useCategoryStore } from '~/stores/categories';
-import { createMissingParents, defaultCategories, Category } from '~/util/classes';
+import {
+  createMissingParents,
+  defaultCategories,
+  Category,
+  Rule,
+  matchString,
+} from '~/util/classes';
 
 describe('categories store', () => {
   setActivePinia(createPinia());
@@ -12,13 +18,13 @@ describe('categories store', () => {
     categoryStore.clearAll();
   });
 
-  test('loads default categories', () => {
+  test('loads default categories', async () => {
     // Load categories
     expect(categoryStore.classes).toHaveLength(0);
     categoryStore.restoreDefaultClasses();
 
     expect(categoryStore.classes_unsaved_changes).toBeTruthy();
-    categoryStore.save();
+    await categoryStore.save();
 
     expect(categoryStore.classes_unsaved_changes).toBeFalsy();
     expect(categoryStore.classes).not.toHaveLength(0);
@@ -43,6 +49,26 @@ describe('categories store', () => {
     expect(categoryStore.classes).toHaveLength(0);
     categoryStore.load([{ name: ['Test'], rule: { type: 'none' } }]);
     expect(categoryStore.all_categories).toHaveLength(1);
+  });
+
+  describe.each([1, -1])('score inheritance from parent %s', parentScore => {
+    test.each([0, 0.5, -0.5, null, undefined])('resolves child score %s', score => {
+      categoryStore.load([
+        { name: ['Parent'], rule: { type: 'none' }, data: { score: parentScore } },
+        { name: ['Parent', 'Child'], rule: { type: 'none' }, data: { score } },
+      ]);
+
+      expect(categoryStore.get_category_score(['Parent', 'Child'])).toBe(score ?? parentScore);
+    });
+
+    test('inherits when child data is absent', () => {
+      categoryStore.load([
+        { name: ['Parent'], rule: { type: 'none' }, data: { score: parentScore } },
+        { name: ['Parent', 'Child'], rule: { type: 'none' } },
+      ]);
+
+      expect(categoryStore.get_category_score(['Parent', 'Child'])).toBe(parentScore);
+    });
   });
 
   test('classes_for_query sends blank-regex rules as none (#382)', () => {
@@ -209,7 +235,7 @@ describe('categories store', () => {
     expect(id).toBe(maxBefore + 1);
   });
 
-  test('import syncs classes into a primary set so save does not persist defaults', () => {
+  test('import syncs classes into a primary set so save does not persist defaults', async () => {
     categoryStore.category_sets = [];
     categoryStore.active_set_ids = ['default'];
     categoryStore.import([{ name: ['Work', 'Coding'], rule: { type: 'regex', regex: 'code' } }]);
@@ -219,7 +245,7 @@ describe('categories store', () => {
     const names = categoryStore.category_sets[0].categories.map(c => c.name);
     expect(names).toContainEqual(['Work']);
     expect(names).toContainEqual(['Work', 'Coding']);
-    categoryStore.save();
+    await categoryStore.save();
     expect(categoryStore.classes_unsaved_changes).toBeFalsy();
   });
 
@@ -269,7 +295,9 @@ describe('categories store: multiple active sets', () => {
         { id: 'mine', categories: [{ name: ['Work'], rule: { type: 'regex', regex: 'code' } }] },
         {
           id: 'shared',
-          categories: [{ name: ['Media', 'Video'], rule: { type: 'regex', regex: 'YouTube' } }],
+          categories: [
+            { name: ['Media', 'Video'], rule: { type: 'regex' as const, regex: 'YouTube' } },
+          ],
         },
       ],
       active_set_ids: ['mine'],
@@ -389,7 +417,10 @@ describe('categories store: multiple active sets', () => {
     store.removeClass(video.id);
     store.save();
     store.discardChanges();
-    store.addClass({ name: ['Media', 'Video'], rule: { type: 'regex', regex: 'YouTube' } });
+    store.addClass({
+      name: ['Media', 'Video'],
+      rule: { type: 'regex' as const, regex: 'YouTube' },
+    });
     store.save();
     store.discardChanges();
     expect(store.classes.map(c => c.name)).toContainEqual(['Media', 'Video']);
@@ -460,7 +491,7 @@ describe('import add-on-top via setActiveSets', () => {
 
   test('importing a new set on top adds it to category_sets and active_set_ids', () => {
     const importedCategories = [
-      { name: ['Media', 'Video'], rule: { type: 'regex', regex: 'YouTube' } },
+      { name: ['Media', 'Video'], rule: { type: 'regex' as const, regex: 'YouTube' } },
     ];
     store.category_sets.push({ id: 'shared', categories: importedCategories });
     store.setActiveSets(['mine', 'shared']);
@@ -474,7 +505,7 @@ describe('import add-on-top via setActiveSets', () => {
 
   test('primary set is unchanged after adding imported set on top', () => {
     const importedCategories = [
-      { name: ['Media', 'Video'], rule: { type: 'regex', regex: 'YouTube' } },
+      { name: ['Media', 'Video'], rule: { type: 'regex' as const, regex: 'YouTube' } },
     ];
     store.category_sets.push({ id: 'shared', categories: importedCategories });
     store.setActiveSets(['mine', 'shared']);
@@ -499,5 +530,51 @@ describe('import add-on-top via setActiveSets', () => {
     expect(store.active_set_ids).toEqual(['mine', 'shared']);
     store.discardChanges();
     expect(store.get_category(['Dev'])?.rule.regex).toBe('editor');
+  });
+});
+
+describe('categories store: append rule', () => {
+  test.each<Rule>([
+    { type: 'none' },
+    { type: null },
+    { type: 'regex', regex: '' },
+    { type: 'regex', regex: 'browser' },
+  ])('appends a first or additional pattern to %j without matching unrelated titles', rule => {
+    const store = useCategoryStore(createPinia());
+    store.load([{ name: ['Work'], rule }]);
+
+    store.appendClassRule(store.classes[0].id, 'editor\\.exe');
+
+    expect(matchString('editor.exe', store.classes)?.name).toEqual(['Work']);
+    expect(matchString('totally unrelated', store.classes)).toBeNull();
+    expect(matchString('editorXexe', store.classes)).toBeNull();
+    if (rule.regex === 'browser') {
+      expect(matchString('browser', store.classes)?.name).toEqual(['Work']);
+    }
+    expect(store.classes_unsaved_changes).toBe(true);
+    expect(store.classes_for_query[0][1]).toEqual(store.classes[0].rule);
+  });
+
+  test.each([false, true])('retains rule options including ignore_case=%s', ignore_case => {
+    const store = useCategoryStore(createPinia());
+    const options = { ignore_case, select_keys: ['title'], priority: 7, weight: 3 };
+    store.load([{ name: ['Work'], rule: { type: 'regex', regex: '', ...options } }]);
+
+    store.appendClassRule(store.classes[0].id, 'editor');
+
+    expect(store.classes[0].rule).toEqual({ type: 'regex', regex: 'editor', ...options });
+    expect(Boolean(matchString('EDITOR', store.classes))).toBe(ignore_case);
+    expect(matchString('totally unrelated', store.classes)).toBeNull();
+  });
+
+  test.each([' ', 'browser|', '|browser', '.*'])('preserves authored nonempty regex %j', regex => {
+    const store = useCategoryStore(createPinia());
+    store.load([{ name: ['Work'], rule: { type: 'regex', regex } }]);
+
+    store.appendClassRule(store.classes[0].id, 'editor');
+
+    expect(store.classes[0].rule.regex).toBe(regex + '|editor');
+    expect(matchString('editor', store.classes)?.name).toEqual(['Work']);
+    expect(matchString('totally unrelated', store.classes)?.name).toEqual(['Work']);
   });
 });

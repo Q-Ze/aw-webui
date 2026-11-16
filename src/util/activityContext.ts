@@ -222,29 +222,55 @@ function truncate<T extends { duration: number }>(
   ];
 }
 
-function dayKey(timestamp: string, timezone: string): string {
-  const date = new Date(timestamp);
-  if (isNaN(date.getTime())) return 'unknown';
+/** Create one formatter per summary; invalid timezones use the UTC fallback. */
+function createDateFormatter(timezone: string): Intl.DateTimeFormat | null {
   try {
-    // en-CA renders as YYYY-MM-DD.
-    return new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(date);
+    return new Intl.DateTimeFormat('en', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Format a Date as `YYYY-MM-DD` in the given timezone using `formatToParts` so
+ * the result is locale-independent. The `en-CA` locale trick no longer works
+ * reliably across ICU versions (Fedora 44 Node.js renders it as `M/D/YYYY`).
+ */
+function localDateStr(date: Date, formatter: Intl.DateTimeFormat | null): string {
+  try {
+    if (!formatter) return date.toISOString().slice(0, 10);
+    const parts = formatter.formatToParts(date);
+    const y = parts.find(p => p.type === 'year')?.value ?? '0000';
+    const m = parts.find(p => p.type === 'month')?.value ?? '01';
+    const d = parts.find(p => p.type === 'day')?.value ?? '01';
+    return `${y}-${m}-${d}`;
   } catch {
     return date.toISOString().slice(0, 10);
   }
+}
+
+function dayKey(timestamp: string, formatter: Intl.DateTimeFormat | null): string {
+  const date = new Date(timestamp);
+  if (isNaN(date.getTime())) return 'unknown';
+  return localDateStr(date, formatter);
 }
 
 /**
  * Find the UTC millisecond timestamp of the next local midnight after `fromMs`
  * in the given timezone, using a binary search over a ≤25h window.
  */
-function nextMidnightAfter(fromMs: number, timezone: string): number {
-  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: timezone });
-  const currentDate = fmt.format(new Date(fromMs));
+function nextMidnightAfter(fromMs: number, formatter: Intl.DateTimeFormat | null): number {
+  const currentDate = localDateStr(new Date(fromMs), formatter);
   let lo = fromMs;
   let hi = fromMs + 25 * 60 * 60 * 1000; // definitely the next day
   while (hi - lo > 1000) {
     const mid = Math.floor((lo + hi) / 2);
-    if (fmt.format(new Date(mid)) === currentDate) {
+    if (localDateStr(new Date(mid), formatter) === currentDate) {
       lo = mid;
     } else {
       hi = mid;
@@ -259,7 +285,7 @@ function nextMidnightAfter(fromMs: number, timezone: string): number {
  */
 function accumulateByDay(
   event: ContextEvent,
-  timezone: string,
+  formatter: Intl.DateTimeFormat | null,
   dayDurations: Record<string, number>
 ): void {
   const duration = event.duration || 0;
@@ -267,16 +293,15 @@ function accumulateByDay(
   const startMs = new Date(event.timestamp).getTime();
   if (isNaN(startMs)) {
     // Unparseable timestamp — fall back to assigning all to the start key.
-    const key = dayKey(event.timestamp, timezone);
+    const key = dayKey(event.timestamp, formatter);
     dayDurations[key] = (dayDurations[key] || 0) + duration;
     return;
   }
   const endMs = startMs + duration * 1000;
-  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: timezone });
   let cursor = startMs;
   while (cursor < endMs) {
-    const dateStr = fmt.format(new Date(cursor));
-    const midnight = nextMidnightAfter(cursor, timezone);
+    const dateStr = localDateStr(new Date(cursor), formatter);
+    const midnight = nextMidnightAfter(cursor, formatter);
     const sliceEnd = Math.min(midnight, endMs);
     dayDurations[dateStr] = (dayDurations[dateStr] || 0) + (sliceEnd - cursor) / 1000;
     cursor = sliceEnd;
@@ -286,18 +311,20 @@ function accumulateByDay(
 /**
  * Focus statistics over the AFK-filtered timeline.
  *
- * Events are assumed to be sorted by timestamp. Consecutive events in the same app
- * are merged into one block, so `appSwitches` counts real context switches rather
- * than watcher heartbeats.
+ * Events are assumed to be sorted by timestamp. Contiguous events in the same app
+ * are merged into one block. App switches count changes between adjacent retained
+ * events; a gap in the same app starts a new block without adding a switch.
  */
 export function computeFocusStats(events: ContextEvent[]): FocusStats {
   const blocks: number[] = [];
+  let appSwitches = 0;
   let currentApp: string | null = null;
   let currentDuration = 0;
   let prevEnd: number | null = null; // seconds since epoch
 
   for (const event of events) {
     const app = event.data?.app || 'unknown';
+    if (currentApp !== null && currentApp !== app) appSwitches++;
     const start = new Date(event.timestamp).getTime() / 1000;
     const duration = event.duration || 0;
     // After AFK or privacy filtering, two events for the same app can be
@@ -324,7 +351,7 @@ export function computeFocusStats(events: ContextEvent[]): FocusStats {
     : 0;
 
   return {
-    appSwitches: Math.max(0, blocks.length - 1),
+    appSwitches,
     blockCount: blocks.length,
     longestBlockSeconds: blocks.length ? Math.max(...blocks) : 0,
     medianBlockSeconds: median,
@@ -352,8 +379,8 @@ export function buildActivityContext(input: BuildContextInput): ActivityContext 
   const exportedSeconds = kept.reduce((sum, e) => sum + (e.duration || 0), 0);
 
   // Apps, with distinct-title counts (the titles themselves stay local).
-  const appDurations: Record<string, number> = {};
-  const appTitles: Record<string, Set<string>> = {};
+  const appDurations: Record<string, number> = Object.create(null);
+  const appTitles: Record<string, Set<string>> = Object.create(null);
   for (const event of kept) {
     const app = event.data?.app || 'unknown';
     appDurations[app] = (appDurations[app] || 0) + (event.duration || 0);
@@ -388,7 +415,7 @@ export function buildActivityContext(input: BuildContextInput): ActivityContext 
   // is on rather than leaking activity the user asked to withhold.
   const privacyFilterActive =
     input.privacy.excludeUncategorized || input.privacy.privateCategories.length > 0;
-  const domainDurations: Record<string, number> = {};
+  const domainDurations: Record<string, number> = Object.create(null);
   if (!privacyFilterActive) {
     for (const event of input.domainEvents || []) {
       const domain = event.data?.$domain;
@@ -404,8 +431,9 @@ export function buildActivityContext(input: BuildContextInput): ActivityContext 
   // Daily distribution. Events that span local midnight are split so their
   // duration is correctly apportioned across both days.
   const dayDurations: Record<string, number> = {};
+  const dateFormatter = createDateFormatter(input.timezone);
   for (const event of kept) {
-    accumulateByDay(event, input.timezone, dayDurations);
+    accumulateByDay(event, dateFormatter, dayDurations);
   }
   const daily: DayStat[] = Object.entries(dayDurations)
     .map(([date, duration]) => ({ date, duration }))

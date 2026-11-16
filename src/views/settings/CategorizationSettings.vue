@@ -84,7 +84,13 @@ div
     div.d-flex.align-items-center.flex-wrap
       h5.mb-0 {{ $t('settings.categorization.builderTitle') }}
       small.text-muted.ml-2 {{ $t('settings.categorization.builderSubtitle') }}
-      b-btn.ml-auto(
+      b-btn.ml-auto.mr-1(
+        variant="outline-secondary"
+        size="sm"
+        to="/category-builder"
+        tag="router-link"
+      ) {{ $t('settings.categorization.openBuilderFullPage') }}
+      b-btn(
         variant="outline-primary"
         size="sm"
         @click="builderOpen = !builderOpen"
@@ -99,16 +105,16 @@ div
 
   b-modal(
     v-model="showCreateSetModal"
-    title="New Category Set"
-    ok-title="Create"
+    :title="$t('settings.categorization.newSetModalTitle')"
+    :ok-title="$t('settings.categorization.createSet')"
     @ok="onCreateSetConfirm"
     @shown="$refs.newSetNameInput && $refs.newSetNameInput.focus()"
   )
-    b-form-group(label="Name for the new category set:")
+    b-form-group(:label="$t('settings.categorization.newSetNameLabel')")
       b-form-input(
         ref="newSetNameInput"
         v-model="newSetName"
-        placeholder="Category set name"
+        :placeholder="$t('settings.categorization.newSetNamePlaceholder')"
       )
 
   b-modal(
@@ -312,16 +318,30 @@ export default {
       this.categoryStore.createSet(name);
       this.categoryStore.switchToSet(name);
     },
-    deleteActiveSet: function () {
+    deleteActiveSet: async function () {
       const id = this.categoryStore.active_set_ids[0];
       if (!id) return;
-      if (!confirm(`Delete category set "${id}"? This cannot be undone.`)) return;
+      const confirmed = await this.$bvModal.msgBoxConfirm(
+        `Delete category set "${id}"? This cannot be undone.`,
+        {
+          title: 'Delete Category Set',
+          okTitle: 'Delete',
+          okVariant: 'danger',
+          cancelTitle: 'Cancel',
+          centered: true,
+        }
+      );
+      if (!confirmed) return;
       this.categoryStore.deleteSet(id);
       this.categoryStore.save();
     },
-    onSetChange: function (setId: string) {
+    onSetChange: async function (setId: string) {
       if (this.classes_unsaved_changes) {
-        if (!confirm('You have unsaved changes. Switch sets anyway? (Changes will be discarded)')) {
+        const confirmed = await this.$bvModal.msgBoxConfirm(
+          'You have unsaved changes. Switch sets anyway? (Changes will be discarded)',
+          { title: 'Unsaved Changes', okTitle: 'Switch', cancelTitle: 'Cancel', centered: true }
+        );
+        if (!confirmed) {
           this.activeSetId = this.categoryStore.active_set_ids[0] || 'default';
           return;
         }

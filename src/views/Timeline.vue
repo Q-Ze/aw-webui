@@ -2,7 +2,7 @@
 div
   h3 {{ $t('timeline.title') }}
 
-  input-timeinterval(v-model="daterange", :defaultDuration="timeintervalDefaultDuration", :maxDuration="maxDuration").mb-3
+  input-timeinterval(v-model="daterange", :defaultDuration="timeintervalDefaultDuration", :maxDuration="maxDuration", :allowTime="true").mb-3
 
   // Toolbar: filters (primary), display kebab (swimlanes etc.), event count,
   // and keyboard hint. Flex-wrap so it doesn't overlap at narrow widths.
@@ -10,78 +10,91 @@ div
     details.timeline-filters.mr-2(ref="filtersDetails")
       summary.timeline-chip.timeline-chip--clickable
         icon.mr-1(name="filter")
-        b Filters: {{ filter_summary }}
+        b {{ $t('ui.timeline.filters') }}: {{ filter_summary }}
       div.timeline-filters-panel.shadow-sm
         table
           tr
             th.pt-2.pr-3
-              label(for="timeline-filter-host") Host:
+              label(for="timeline-filter-host") {{ $t('ui.timeline.host') }}
             td
               select#timeline-filter-host.form-control.form-control-sm(v-model="filter_hostname")
-                option(:value='null') All
+                option(:value='null') {{ $t('ui.timeline.all') }}
                 option(v-for="host in hosts", :value="host") {{ host }}
           tr
             th.pt-2.pr-3
-              label(for="timeline-filter-client") Client:
+              label(for="timeline-filter-client") {{ $t('ui.timeline.client') }}
             td
               select#timeline-filter-client.form-control.form-control-sm(v-model="filter_client")
-                option(:value='null') All
+                option(:value='null') {{ $t('ui.timeline.all') }}
                 option(v-for="client in clients", :value="client") {{ client }}
           tr
             th.pt-2.pr-3
-              label(for="timeline-filter-duration") Duration:
+              label(for="timeline-filter-duration") {{ $t('ui.timeline.duration') }}
             td
               select#timeline-filter-duration.form-control.form-control-sm(v-model="filter_duration")
-                option(:value='null') All
-                option(:value='2') 2+ secs
-                option(:value='5') 5+ secs
-                option(:value='10') 10+ secs
-                option(:value='30') 30+ sec
-                option(:value='1 * 60') 1+ mins
-                option(:value='2 * 60') 2+ mins
-                option(:value='3 * 60') 3+ mins
-                option(:value='10 * 60') 10+ mins
-                option(:value='30 * 60') 30+ mins
-                option(:value='1 * 60 * 60') 1+ hrs
-                option(:value='2 * 60 * 60') 2+ hrs
+                option(:value='null') {{ $t('ui.timeline.all') }}
+                option(:value='2') {{ $t('ui.timeline.seconds', { count: 2 }) }}
+                option(:value='5') {{ $t('ui.timeline.seconds', { count: 5 }) }}
+                option(:value='10') {{ $t('ui.timeline.seconds', { count: 10 }) }}
+                option(:value='30') {{ $t('ui.timeline.seconds', { count: 30 }) }}
+                option(:value='1 * 60') {{ $t('ui.timeline.minutes', { count: 1 }) }}
+                option(:value='2 * 60') {{ $t('ui.timeline.minutes', { count: 2 }) }}
+                option(:value='3 * 60') {{ $t('ui.timeline.minutes', { count: 3 }) }}
+                option(:value='10 * 60') {{ $t('ui.timeline.minutes', { count: 10 }) }}
+                option(:value='30 * 60') {{ $t('ui.timeline.minutes', { count: 30 }) }}
+                option(:value='1 * 60 * 60') {{ $t('ui.timeline.hours', { count: 1 }) }}
+                option(:value='2 * 60 * 60') {{ $t('ui.timeline.hours', { count: 2 }) }}
           tr
             th.pt-2.pr-3
-              label AFK:
+              label {{ $t('activity.excludeAfk') }}：
             td
               b-form-checkbox(v-model="filter_afk" size="sm" switch)
                 | {{ $t('timeline.filterAfk') }}
           tr
             th.pt-2.pr-3
-              label Merge:
+              label {{ $t('ui.timeline.merge') }}：
             td
               b-form-checkbox(v-model="filter_merge_similar" size="sm" switch)
                 | {{ $t('timeline.mergeByApp') }}
           tr
             th.pt-2.pr-3
-              label(for="timeline-filter-categories") Categories:
+              label(for="timeline-filter-categories") {{ $t('ui.timeline.categories') }}
             td
               select#timeline-filter-categories.form-control.form-control-sm(@change="onCategorySelect($event)", :value="''")
-                option(value="" disabled) {{ filter_categories.length > 0 ? 'Add category...' : 'All' }}
+                option(value="" disabled) {{ filter_categories.length > 0 ? $t('ui.workReport.addCategory') : $t('ui.timeline.all') }}
                 option(v-for="cat in category_options", :key="cat.text", :value="cat.text") {{ cat.text }}
               div.mt-1(v-if="filter_categories.length > 0")
                 span.badge.badge-info.mr-1(v-for="(cat, idx) in filter_categories", :key="idx")
-                  | {{ cat.join(' > ') }}
-                  button.ml-1.close.small(@click="removeCategory(idx)", type="button", aria-label="Remove category", style="font-size: 0.85rem; line-height: 1") &times;
+                  | {{ categoryPathLabel(cat) }}
+                  button.ml-1.close.small(@click="removeCategory(idx)", type="button", :aria-label="$t('ui.workReport.removeCategory')", style="font-size: 0.85rem; line-height: 1") &times;
+
+    b-button-group.mr-2(size="sm")
+      b-button(
+        variant="outline-secondary"
+        :pressed="view_mode === 'timeline'"
+        @click="view_mode = 'timeline'"
+      ) {{ $t('timeline.title') }}
+      b-button(
+        variant="outline-secondary"
+        :pressed="view_mode === 'list'"
+        @click="view_mode = 'list'"
+      ) {{ $t('ui.timeline.list') }}
 
     // Display options (swimlanes, future visual toggles) tucked behind a
     // ghost kebab so they don't compete visually with Filters.
     b-dropdown.kebab-dropdown.mr-2(
+      v-if="view_mode === 'timeline'"
       size="sm"
       variant="outline-secondary"
       toggle-class="border-0"
       no-caret
       right
-      title="Display options"
-      aria-label="Display options"
+      :title="$t('ui.timeline.displayOptions')"
+      :aria-label="$t('ui.timeline.displayOptions')"
     )
-      template(v-slot:button-content)
+      template(v-slot:button-content="")
         icon(name="ellipsis-v")
-      b-dropdown-header Swimlanes
+      b-dropdown-header {{ $t('ui.timeline.swimlanes') }}
       b-dropdown-item-button(
         v-for="opt in swimlaneOptions"
         :key="String(opt.value)"
@@ -92,16 +105,22 @@ div
     div.timeline-chip.mr-2.text-muted
       | {{ num_events }} {{ $t('timeline.eventsShown') }}
 
-    small.text-muted.ml-auto
+    small.text-muted.ml-auto(v-if="view_mode === 'timeline'")
       | {{ $t('timeline.scrollHint') }}
 
   b-alert.mb-2(v-if="buckets !== null && num_events === 0", variant="warning", show)
     | {{ $t('timeline.noEvents') }}
 
-  div(v-if="buckets !== null")
-    vis-timeline(:buckets="buckets", :showRowLabels='true', :queriedInterval="daterange", :swimlane="swimlane", :updateTimelineWindow='updateTimelineWindow')
+  b-alert.mb-2(v-if="categoryError", variant="warning", show)
+    | Categorized timeline unavailable. Raw bucket events are still shown.
 
-    aw-devonly(reason="Not ready for production, still experimenting")
+  div(v-if="buckets !== null && view_mode === 'list'")
+    // Same filtered buckets as the timeline, one chronological row per event.
+    aw-timeline-event-list(:buckets="buckets", :range="daterange")
+  div(v-else-if="buckets !== null")
+    vis-timeline(:buckets="buckets", :categorizedEvents="categorizedEvents", :showRowLabels='true', :queriedInterval="daterange", :swimlane="swimlane", :groupGranularity="timelineGroupGranularity", :updateTimelineWindow='updateTimelineWindow', @event-saved="onEventSaved")
+
+    aw-devonly(:reason="$t('ui.devOnly.timelineExperiment')")
       aw-calendar(:buckets="buckets")
   div(v-else)
     h1.aw-loading {{ $t('common.loading') }}
@@ -120,15 +139,22 @@ import { useCategoryStore } from '~/stores/categories';
 import { matchString } from '~/util/classes';
 import { getCategorizationStringFromEvent } from '~/util/color';
 import { seconds_to_duration } from '~/util/time';
+import { categoryPathLabel } from '~/util/categoryLabels';
+import { categoryTimelineQuery, mergeCategoryIntervals } from '~/util/timelineCategories';
+import TimelineEventList from '~/visualizations/TimelineEventList.vue';
 
 export default {
   name: 'Timeline',
+  components: { 'aw-timeline-event-list': TimelineEventList },
   data() {
     return {
       all_buckets: null,
       hosts: null,
       buckets: null,
+      categorizedEvents: [],
+      categoryError: false,
       clients: null,
+      fetchSeq: 0,
       daterange: null,
       maxDuration: 31 * 24 * 60 * 60,
       filter_hostname: null,
@@ -138,16 +164,22 @@ export default {
       filter_merge_similar: false,
       filter_categories: [],
       swimlane: null,
-      swimlaneOptions: [
-        { value: null, text: 'None' },
-        { value: 'category', text: 'Group by category' },
-        { value: 'bucketType', text: 'Group by bucket type' },
-      ],
+      view_mode: 'timeline',
       updateTimelineWindow: true,
     };
   },
   computed: {
     ...mapState(useSettingsStore, ['always_active_pattern']),
+    swimlaneOptions() {
+      return [
+        { value: null, text: this.$t('ui.timeline.none') },
+        { value: 'category', text: this.$t('ui.timeline.groupByCategory') },
+        { value: 'bucketType', text: this.$t('ui.timeline.groupByBucketType') },
+      ];
+    },
+    timelineGroupGranularity() {
+      return Number(useSettingsStore().timelineGroupGranularity);
+    },
     timeintervalDefaultDuration() {
       const settingsStore = useSettingsStore();
       return Number(settingsStore.durationDefault);
@@ -172,23 +204,19 @@ export default {
         desc.push(seconds_to_duration(this.filter_duration));
       }
       if (this.filter_afk) {
-        desc.push('AFK filtered');
+        desc.push(this.$t('ui.timeline.afkFiltered'));
       }
       if (this.filter_merge_similar) {
-        desc.push('merged by app');
+        desc.push(this.$t('ui.timeline.mergedByApp'));
       }
       if (this.filter_categories.length > 0) {
-        desc.push(
-          this.filter_categories.length +
-            ' categor' +
-            (this.filter_categories.length === 1 ? 'y' : 'ies')
-        );
+        desc.push(this.$t('ui.timeline.categoriesCount', { count: this.filter_categories.length }));
       }
 
       if (desc.length > 0) {
         return desc.join(', ');
       }
-      return 'none';
+      return this.$t('ui.timeline.none');
     },
   },
   watch: {
@@ -225,7 +253,11 @@ export default {
       this.getBuckets();
     },
   },
+  created() {
+    useCategoryStore().load();
+  },
   methods: {
+    categoryPathLabel,
     onCategorySelect(event) {
       const text = event.target.value;
       if (!text) return;
@@ -238,15 +270,32 @@ export default {
     removeCategory(idx) {
       this.filter_categories = this.filter_categories.filter((_cat, i) => i !== idx);
     },
+    // A saved edit changed the server's events, so the cached range is stale.
+    onEventSaved: function () {
+      this.fetchedRange = null;
+      this.getBuckets();
+    },
     getBuckets: async function () {
       if (this.daterange == null) return;
 
-      this.all_buckets = Object.freeze(
-        await useBucketsStore().getBucketsWithEvents({
-          start: this.daterange[0].format(),
-          end: this.daterange[1].format(),
-        })
-      );
+      const seq = ++this.fetchSeq;
+      // Only refetch when the range changes; filters work on copies below.
+      const range = this.daterange;
+      if (this.fetchedRange !== range) {
+        this.fetchedRange = range;
+        this.bucketsRequest = useBucketsStore().getBucketsWithEvents({
+          start: range[0].format(),
+          end: range[1].format(),
+        });
+        // Let the next call retry a failed fetch
+        this.bucketsRequest.catch(() => {
+          if (this.fetchedRange === range) this.fetchedRange = null;
+        });
+      }
+      const fetched = await this.bucketsRequest;
+      // A newer call (range or filter change) took over while this one was loading
+      if (seq !== this.fetchSeq) return;
+      this.all_buckets = Object.freeze(fetched);
 
       this.hosts = this.all_buckets
         .map(a => a.hostname)
@@ -255,12 +304,41 @@ export default {
         .map(a => a.client)
         .filter((value, index, array) => array.indexOf(value) === index);
 
-      let buckets = this.all_buckets;
+      let buckets = this.all_buckets.map(bucket => ({ ...bucket }));
       if (this.filter_hostname) {
         buckets = _.filter(buckets, b => b.hostname == this.filter_hostname);
       }
       if (this.filter_client) {
         buckets = _.filter(buckets, b => b.client == this.filter_client);
+      }
+
+      // Start the category query now so it runs concurrently with the raw-row
+      // filtering below, and publish raw rows without waiting for it.
+      let categoryPromise: Promise<{
+        events: ReturnType<typeof mergeCategoryIntervals>;
+        error: boolean;
+      }>;
+      const categoryQuery = categoryTimelineQuery(buckets, this.all_buckets, {
+        categories: useCategoryStore().classes_for_query,
+        filter_categories: this.filter_categories,
+        always_active_pattern: this.always_active_pattern || undefined,
+      });
+      if (categoryQuery) {
+        categoryPromise = getClient()
+          .query([`${this.daterange[0].format()}/${this.daterange[1].format()}`], categoryQuery)
+          .then(data => {
+            let events = mergeCategoryIntervals(data[0] || []);
+            if (this.filter_duration > 0) {
+              events = events.filter(e => e.duration >= this.filter_duration);
+            }
+            return { events, error: false };
+          })
+          .catch(error => {
+            console.warn('Categorized timeline query failed:', error);
+            return { events: [], error: true };
+          });
+      } else {
+        categoryPromise = Promise.resolve({ events: [], error: false });
       }
 
       if (this.filter_duration > 0) {
@@ -302,7 +380,18 @@ export default {
         buckets = this._applyMergeSimilar(buckets);
       }
 
-      this.buckets = buckets;
+      if (seq !== this.fetchSeq) return;
+      // Raw rows are ready; publish them before awaiting the category query.
+      // Clear the old category row so it can never be paired with a new range.
+      this.categorizedEvents = [];
+      this.categoryError = false;
+      // Frozen to keep the event graph out of Vue's deep observation.
+      this.buckets = Object.freeze(buckets);
+
+      const categoryResult = await categoryPromise;
+      if (seq !== this.fetchSeq) return;
+      this.categorizedEvents = categoryResult.events;
+      this.categoryError = categoryResult.error;
     },
 
     // Merges adjacent events with the same app name within window buckets.

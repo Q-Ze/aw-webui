@@ -207,6 +207,12 @@ export function canonicalEvents(params: DesktopQueryParams | AndroidQueryParams)
         ? 'events = merge_events_by_keys(events, ["app", "title"]);'
         : 'events = merge_events_by_keys(events, ["app"]);'
       : '',
+    // Snapshot the raw window/app events before the AFK, category and
+    // stopwatch steps below rewrite `events`. The Activity view uses this to
+    // tell a genuinely empty period apart from one that filters hid: filtered
+    // active time is zero both when the bucket has no events and when the
+    // user was AFK or picked a category with no matches.
+    'raw_window_events = events;',
     // Fetch not-afk events. When there is no AFK bucket (bid_afk is empty),
     // emit an empty not_afk list so later references to the variable
     // (including `return_variable_suffix`, used by the multidevice query)
@@ -260,7 +266,15 @@ export function canonicalEvents(params: DesktopQueryParams | AndroidQueryParams)
   ].join('\n');
 }
 
-export function canonicalMultideviceEvents(params: MultiQueryParams): string {
+// With trackHostDurations, also records per-host durations for the
+// per-device breakdown: host_cumulative_<i> is the merged duration after host
+// i is added (its credited share is the difference from host i-1, so shares add
+// up to the merged total), and host_raw_<i> is the host's own duration before
+// overlap resolution.
+export function canonicalMultideviceEvents(
+  params: MultiQueryParams,
+  trackHostDurations = false
+): string {
   // First, query each device individually
   const queries: string[] = _.map(params.hosts, (_hostname, i) => {
     return canonicalEvents(get_params(params, i));
@@ -277,6 +291,12 @@ export function canonicalMultideviceEvents(params: MultiQueryParams): string {
     events = union_no_overlap(events, events_${hostVariableSuffix(params, i)});
     not_afk = union_no_overlap(not_afk, not_afk_${hostVariableSuffix(params, i)});
     `;
+    if (trackHostDurations) {
+      query += `
+    host_cumulative_${i} = sum_durations(events);
+    host_raw_${i} = sum_durations(events_${hostVariableSuffix(params, i)});
+    `;
+    }
   }
 
   return query;
@@ -332,19 +352,46 @@ export const browser_appnames: Record<string, string[]> = {
   // web events land in the chrome bucket. Reverse-domain identifiers don't
   // match the process-name regex below and have to live here (#927).
   chrome: [
+    // Desktop (Flatpak / macOS bundle IDs)
     'com.google.Chrome',
     'com.google.ChromeDev',
     'org.chromium.Chromium',
     'company.thebrowser.dia',
+    // Android package names — Chromium-based browsers that use the chrome extension bucket
+    'com.android.chrome',
+    'com.chrome.beta',
+    'com.chrome.dev',
+    'com.chrome.canary',
+    'org.bromite.cromite', // Cromite is a Chromium fork; its extension identifies as chrome
   ],
-  firefox: ['org.mozilla.firefox', 'io.gitlab.librewolf-community', 'net.waterfox.waterfox'],
-  opera: ['com.opera.Opera'],
-  brave: ['com.brave.Browser'],
-  edge: ['com.microsoft.Edge', 'com.microsoft.EdgeDev'],
+  firefox: [
+    // Desktop
+    'org.mozilla.firefox',
+    'io.gitlab.librewolf-community',
+    'net.waterfox.waterfox',
+    // Android
+    'org.mozilla.fenix',
+    'org.mozilla.firefox_beta',
+    'org.mozilla.focus',
+  ],
+  opera: ['com.opera.Opera', 'com.opera.browser', 'com.opera.browser.beta'],
+  brave: [
+    'com.brave.Browser',
+    'com.brave.browser',
+    'com.brave.browser_beta',
+    'com.brave.browser_nightly',
+  ],
+  edge: [
+    'com.microsoft.Edge',
+    'com.microsoft.EdgeDev',
+    'com.microsoft.emmx',
+    'com.microsoft.emmx.beta',
+    'com.microsoft.emmx.dev',
+  ],
   arc: [],
-  vivaldi: ['com.vivaldi.Vivaldi'],
+  vivaldi: ['com.vivaldi.Vivaldi', 'com.vivaldi.browser'],
   orion: ['Orion'],
-  yandex: ['ru.yandex.Browser'],
+  yandex: ['ru.yandex.Browser', 'ru.yandex.browser'],
   zen: ['app.zen_browser.zen'],
   floorp: ['one.ablaze.floorp'],
   helium: ['net.imput.helium'],
@@ -380,11 +427,18 @@ function browsersWithBuckets(browserbuckets: string[]): [string, string][] {
 // the same way (#898). It's listed here rather than in browser_appname_regex.helium
 // so it gets the same dedicated-bucket exclusion as Arc/Dia below.
 //
+// Ungoogled Chromium runs the Chrome Web Store extension build the same way as the
+// other forks, so its events land in the chrome bucket too. Its process name
+// ("ungoogled-chromium", "ungoogled_chromium", "Ungoogled Chromium") does not start
+// with "chromium", so the base alternatives below miss it. It has no dedicated
+// bucket, so it belongs with the base alternatives rather than the $-anchored,
+// excludable fork list.
+//
 // When a dedicated fork bucket participates (today: settings-override Arc, or a
 // standalone Helium bucket), only that fork is stripped from the chrome stream so
 // the dedicated bucket owns those events without dropping other chrome-bucket
 // forks (Dia has no dedicated bucket).
-const CHROME_BASE_ALTS = ['google[-_ ]?chrome', 'chrome', 'chromium'];
+const CHROME_BASE_ALTS = ['google[-_ ]?chrome', 'chrome', 'chromium', 'ungoogled[-_ ]?chromium'];
 const CHROME_FORK_ALTS: Record<string, string> = {
   arc: 'arc(\\.exe)?$',
   dia: 'dia(\\.exe)?$',
@@ -464,6 +518,35 @@ function browserEvents(params: DesktopQueryParams): string {
   return code;
 }
 
+// Search all browser buckets for events whose url OR title matches a regex.
+// Unlike browserEvents(), no window-intersection is applied — we want any URL
+// the user visited in the period, not just while the browser was focused.
+export function browserSearchQuery(browserBuckets: string[], pattern: string): string[] {
+  if (browserBuckets.length === 0) return [];
+  // JSON.stringify escapes regex backslashes twice; the AW query language only
+  // needs a single backslash, so patterns like '\d' must be un-escaped to match
+  // (same treatment as `categories_str` in canonicalEvents).
+  // Match window search's ignore_case rule for both URL and title matches.
+  const escapedPattern = JSON.stringify('(?i)' + pattern).replace(/\\\\/g, '\\');
+  let code = 'browser_results = [];';
+  // Use numeric indices as variable-name suffixes so every bucket is queried
+  // regardless of whether its name matches a known browser — this also handles
+  // multiple buckets for the same browser (e.g. two Chrome profiles).
+  browserBuckets.forEach((bucketId, idx) => {
+    const v = `b${idx}`;
+    code += `
+    events_${v} = flood(query_bucket("${escape_doublequote(bucketId)}"));
+    events_${v} = split_url_events(events_${v});
+    url_${v} = filter_keyvals_regex(events_${v}, "url", ${escapedPattern});
+    title_${v} = filter_keyvals_regex(events_${v}, "title", ${escapedPattern});
+    events_${v} = sort_by_timestamp(concat(url_${v}, title_${v}));
+    browser_results = concat(browser_results, events_${v});
+    browser_results = sort_by_timestamp(browser_results);`;
+  });
+  code += '\nRETURN = browser_results;';
+  return querystr_to_array(code);
+}
+
 export function fullDesktopQuery(params: DesktopQueryParams): string[] {
   return querystr_to_array(
     `
@@ -482,6 +565,7 @@ export function fullDesktopQuery(params: DesktopQueryParams): string[] {
     app_events  = limit_events(app_events, ${default_limit});
     title_events  = limit_events(title_events, ${default_limit});
     duration = sum_durations(events);
+    raw_window_duration = sum_durations(raw_window_events);
     ` + // Browser events are retrieved in canonicalQuery
       `
     browser_events = split_url_events(browser_events);
@@ -506,7 +590,8 @@ export function fullDesktopQuery(params: DesktopQueryParams): string[] {
             "title_events": title_events,
             "cat_events": cat_events,
             "active_events": not_afk,
-            "duration": duration
+            "duration": duration,
+            "raw_duration": raw_window_duration
         },
         "browser": {
             "domains": browser_domains,
@@ -542,9 +627,12 @@ export function multideviceQuery(params: MultiQueryParams): string[] {
   // title_events would silently exclude mobile hosts' app-level
   // breakdown even though their duration is counted; title breakdown
   // (which mobile hosts can't provide) stays desktop-only.
+  const hostIndexes = _.range(params.hosts.length);
+  const hostCumulative = hostIndexes.map(i => `host_cumulative_${i}`).join(', ');
+  const hostRaw = hostIndexes.map(i => `host_raw_${i}`).join(', ');
   return querystr_to_array(
     `
-    ${canonicalMultideviceEvents(params)}
+    ${canonicalMultideviceEvents(params, true)}
     title_events = sort_by_duration(merge_events_by_keys(events, ["app", "title"]));
     app_events   = sort_by_duration(merge_events_by_keys(events, ["app"]));
     cat_events   = sort_by_duration(merge_events_by_keys(events, ["$category"]));
@@ -561,7 +649,9 @@ export function multideviceQuery(params: MultiQueryParams): string[] {
             "title_events": title_events,
             "cat_events": cat_events,
             "active_events": not_afk,
-            "duration": duration
+            "duration": duration,
+            "host_cumulative_durations": [${hostCumulative}],
+            "host_raw_durations": [${hostRaw}]
         }
     };`
   );
@@ -599,9 +689,7 @@ export function editorActivityQuery(editorbuckets: string[], limit = default_lim
 
 // Returns a query that yields a single event with the duration set to
 // the sum of all non-afk time in the queried period
-// TODO: Would ideally account for `filter_afk` and `always_active_pattern`
-// TODO: rename to something like `activeDurationQuery`
-// FIXME: Doesn't respect audible-as-active and always-active-pattern
+// AFK-only fallback for hosts without window/browser activity.
 export function activityQuery(afkbuckets: string[]): string[] {
   let q = ['not_afk = [];'];
   for (const afkbucket of afkbuckets) {
@@ -616,6 +704,70 @@ export function activityQuery(afkbuckets: string[]): string[] {
   // per-event sanitation (dead-watcher marathon dropping) impossible.
   q = q.concat(['RETURN = not_afk;']);
   return q;
+}
+
+export interface ActivityQuerySource {
+  bid_afk?: string;
+  bid_android?: string;
+  bid_window?: string;
+  bid_browsers?: string[];
+}
+
+export interface ActivityQueryOptions {
+  filter_afk?: boolean;
+  include_audible?: boolean;
+  always_active_pattern?: string;
+}
+
+// History measures active evidence, independent of category filters. With AFK
+// filtering disabled it measures window coverage instead. Union periods before
+// returning them so overlapping evidence and devices are counted only once.
+export function activeDurationQuery(
+  sources: ActivityQuerySource[],
+  options: ActivityQueryOptions = {}
+): string[] {
+  let code = 'history_events = [];';
+  for (const source of sources) {
+    if (source.bid_android) {
+      // Preserve mobile intervals so overlapping devices count only once.
+      code += `history_events = union_no_overlap(history_events, flood(${queryBucket(
+        escape_doublequote(source.bid_android)
+      )}));`;
+    } else if (source.bid_window) {
+      code += canonicalEvents({
+        ...options,
+        filter_afk: options.filter_afk !== false,
+        bid_window: escape_doublequote(source.bid_window),
+        bid_afk: escape_doublequote(source.bid_afk),
+        bid_browsers: (source.bid_browsers || []).map(escape_doublequote),
+        always_active_pattern: options.always_active_pattern
+          ? escape_doublequote(options.always_active_pattern)
+          : undefined,
+        categories: null,
+        filter_categories: null,
+      });
+      code += `history_events = union_no_overlap(history_events, ${
+        options.filter_afk === false ? 'events' : 'not_afk'
+      });`;
+    } else {
+      // No window source means there is no app/title or browser context; retain
+      // the observed AFK signal even when filter_afk is disabled.
+      //
+      // Built inline rather than via activityQuery, whose trailing
+      // merge_events_by_keys(not_afk, ["status"]) collapses every not-afk
+      // period into one event carrying the first timestamp and the summed
+      // duration. That is no longer an interval, so unioning it against
+      // another source's real periods trims time that was never concurrent,
+      // and multidevice with an AFK-only host under-counted.
+      const bid_afk = escape_doublequote(source.bid_afk);
+      code += `
+        not_afk = flood(${queryBucket(bid_afk)});
+        not_afk = filter_keyvals(not_afk, "status", ["not-afk"]);
+      `;
+      code += 'history_events = union_no_overlap(history_events, not_afk);';
+    }
+  }
+  return querystr_to_array(code + 'RETURN = history_events;');
 }
 
 // Equivalent function to activityQuery, but for Android (which doesn't have an afk bucket)
@@ -728,12 +880,119 @@ export function browserOnlyQuery(browserbuckets: string[]): string[] {
   return querystr_to_array(code);
 }
 
+// Query that blends Android app data with browser URL data (intersection).
+// For each browser that has both an aw-watcher-web bucket AND matching Android
+// app events, URL events are filtered to the periods when the browser was in
+// the foreground on the Android device.  This mirrors how fullDesktopQuery
+// blends window focus + browser URLs on desktop.
+//
+// Returns { browser: { domains, urls, titles, duration } } — the same shape
+// as query_browser_only / fullDesktopQuery so query_browser_completed can
+// consume it unchanged.
+export function androidBrowserQuery(
+  bid_android: string,
+  bid_browsers: string[],
+  categories: Category[],
+  filter_categories: string[][],
+  isIos = false
+): string[] {
+  bid_android = escape_doublequote(bid_android);
+  const escaped_browsers = bid_browsers.map(escape_doublequote);
+  // keep_event_timestamps: merge_events_by_keys collapses each app into one
+  // event at its first timestamp with summed duration, so URL intersection
+  // would match the wrong clock times (Chrome 09:00–09:10 and 10:00–10:10
+  // become a 20-minute event starting at 09:00). Same flag the multidevice
+  // path uses when combining Android events with another timeline.
+  // filter_categories is accepted for signature parity with appQuery but
+  // must not apply here: selecting a category that excludes the browser app
+  // would drop its foreground periods (and therefore its URLs) even when
+  // those sites belong to the selected category. Desktop selects browser
+  // periods before the category filter; the previous Android browser-only
+  // query ignored it too.
+  const params: AndroidQueryParams = {
+    bid_android,
+    categories,
+    filter_categories,
+    isIos,
+    keep_event_timestamps: true,
+  };
+  // Unlike the desktop selector, keep every profile bucket for each browser.
+  const browsers: [string, string][] = Object.keys(browser_appnames)
+    .filter(browserName => browser_appnames[browserName].length > 0)
+    .flatMap(browserName =>
+      escaped_browsers
+        .filter(
+          bucketId =>
+            bucketId === `aw-watcher-web-${browserName}` ||
+            bucketId.startsWith(`aw-watcher-web-${browserName}_`) ||
+            bucketId.startsWith(`aw-watcher-web-${browserName}-synced-from-`)
+        )
+        .map(bucketId => [browserName, bucketId] as [string, string])
+    );
+
+  // Mirror browserEvents() but rely on the `events` variable set by
+  // canonicalEvents(AndroidQueryParams) — which holds the android app events.
+  // Exact filter_keyvals matching against "package" therefore selects the
+  // periods when a browser was in the foreground on the Android device, giving
+  // a proper intersection rather than raw URL totals.
+  let browser_code = `browser_events = [];`;
+  _.each(browsers, ([browserName, bucketId]) => {
+    const appnames_str = JSON.stringify(browser_appnames[browserName]);
+    browser_code += `
+      events_${browserName} = flood(query_bucket("${bucketId}"));
+      window_${browserName} = filter_keyvals(events, "package", ${appnames_str});`;
+    // Mobile watcher events put display labels in app and exact IDs in package.
+    // Desktop substring regexes
+    // can select a different browser (e.g. Firefox's "nightly" matches Brave Nightly).
+    browser_code += `
+      events_${browserName} = filter_period_intersect(events_${browserName}, window_${browserName});
+      events_${browserName} = split_url_events(events_${browserName});
+      browser_events = concat(browser_events, events_${browserName});
+      browser_events = sort_by_timestamp(browser_events);`;
+  });
+
+  // A custom extension name has no known package mapping. Preserve the
+  // previous browser-only behavior for those buckets instead of dropping them.
+  const matchedBuckets = new Set(browsers.map(([, bucketId]) => bucketId));
+  escaped_browsers
+    .filter(bucketId => !matchedBuckets.has(bucketId))
+    .forEach((bucketId, i) => {
+      browser_code += `
+      events_custom_${i} = flood(query_bucket("${bucketId}"));
+      events_custom_${i} = split_url_events(events_custom_${i});
+      browser_events = concat(browser_events, events_custom_${i});`;
+    });
+
+  const code = `
+    ${canonicalEvents({ ...params, filter_categories: [] })}
+    ${browser_code}
+    browser_urls = merge_events_by_keys(browser_events, ["url"]);
+    browser_urls = sort_by_duration(browser_urls);
+    browser_domains = merge_events_by_keys(browser_events, ["$domain"]);
+    browser_domains = sort_by_duration(browser_domains);
+    browser_titles = merge_events_by_keys(browser_events, ["title"]);
+    browser_titles = sort_by_duration(browser_titles);
+    browser_duration = sum_durations(browser_events);
+    RETURN = {
+      "browser": {
+        "domains": browser_domains,
+        "urls": browser_urls,
+        "titles": browser_titles,
+        "duration": browser_duration
+      }
+    };
+  `;
+  return querystr_to_array(code);
+}
+
 export default {
   fullDesktopQuery,
   analysisContextQuery,
   multideviceQuery,
   appQuery,
+  androidBrowserQuery,
   activityQuery,
+  activeDurationQuery,
   activityQueryAndroid,
   multideviceActivityQuery,
   screentimeNamesQuery,

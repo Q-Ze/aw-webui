@@ -35,10 +35,12 @@ import CategorizationSettings from '~/views/settings/CategorizationSettings.vue'
 import LandingPageSettings from '~/views/settings/LandingPageSettings.vue';
 import DeveloperSettings from '~/views/settings/DeveloperSettings.vue';
 import Theme from '~/views/settings/Theme.vue';
+import LayoutSettings from '~/views/settings/LayoutSettings.vue';
 import ColorSettings from '~/views/settings/ColorSettings.vue';
 import ActivePatternSettings from '~/views/settings/ActivePatternSettings.vue';
 import PrivacyFilterSettings from '~/views/settings/PrivacyFilterSettings.vue';
 import AwNotifySettings from '~/views/settings/AwNotifySettings.vue';
+import SupporterSettings from '~/views/settings/SupporterSettings.vue';
 
 interface Group {
   id: string;
@@ -58,16 +60,27 @@ export default {
     CategorizationSettings,
     LandingPageSettings,
     Theme,
+    LayoutSettings,
     ColorSettings,
     DeveloperSettings,
     ActivePatternSettings,
     PrivacyFilterSettings,
     AwNotifySettings,
+    SupporterSettings,
   },
-  beforeRouteLeave(to, from, next) {
+  async beforeRouteLeave(to, from, next) {
     const categoryStore = useCategoryStore();
     if (categoryStore.classes_unsaved_changes) {
-      if (confirm(this.$t('settings.unsavedCategoriesLeave'))) {
+      const confirmed = await this.$bvModal.msgBoxConfirm(
+        this.$t('settings.unsavedCategoriesLeave'),
+        {
+          title: this.$t('settings.unsavedCategoriesLeaveTitle'),
+          okTitle: this.$t('settings.unsavedCategoriesLeaveOk'),
+          cancelTitle: this.$t('settings.unsavedCategoriesLeaveCancel'),
+          centered: true,
+        }
+      );
+      if (confirmed) {
         next();
       } else {
         next(false);
@@ -95,6 +108,7 @@ export default {
           { name: 'TimelineDurationSettings' },
           { name: 'LandingPageSettings' },
           { name: 'UncategorizedHintSettings' },
+          { name: 'SupporterSettings' },
           ...(this.$isAndroid ? [] : [{ name: 'ReleaseNotificationSettings' }]),
         ],
       };
@@ -102,7 +116,7 @@ export default {
         id: 'appearance',
         label: this.$t('settings.groups.appearance'),
         help: this.$t('settings.groups.appearanceHelp'),
-        components: [{ name: 'Theme' }, { name: 'ColorSettings' }],
+        components: [{ name: 'Theme' }, { name: 'LayoutSettings' }, { name: 'ColorSettings' }],
       };
       const categorization: Group = {
         id: 'categorization',
@@ -124,8 +138,8 @@ export default {
 
       const notifications: Group = {
         id: 'notifications',
-        label: 'Notifications',
-        help: 'Configure shared aw-notify alert thresholds for Android and desktop.',
+        label: this.$t('settings.notifications.title'),
+        help: this.$t('settings.notifications.help'),
         components: [{ name: 'AwNotifySettings' }],
       };
 

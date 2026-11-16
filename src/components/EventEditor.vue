@@ -1,53 +1,59 @@
 <template lang="pug">
-b-modal(v-if="event && event.id", :id="'edit-modal-' + event.id", ref="eventEditModal", title="Edit event", centered, hide-footer)
-  div(v-if="!editedEvent")
-    | Loading event...
+b-modal(v-if="event && event.id", :id="'edit-modal-' + event.id", ref="eventEditModal", :title="$t('ui.eventEditor.editTitle')", centered, hide-footer, :no-close-on-backdrop="busy", :no-close-on-esc="busy", :hide-header-close="busy")
+  b-alert(v-if="error" show variant="danger")
+    | {{ error }}
+    b-button.ml-2(v-if="!draftReady", @click="getEvent", :disabled="busy", size="sm")
+      | {{ $t('activity.refresh') }}
 
-  div(v-else)
+  div(v-if="!draftReady && !error")
+    | {{ $t('ui.eventEditor.loading') }}
+
+  div(v-if="draftReady")
     table(style="width: 100%")
       tr
-        th Bucket
+        th {{ $t('ui.eventEditor.bucket') }}
         td {{ bucket_id }}
       tr
         th ID
         td {{ event.id }}
       tr
-        th Start
-        datetime(type="datetime" v-model="start")
+        th {{ $t('ui.eventEditor.start') }}
+        datetime(type="datetime" v-model="start" :disabled="busy")
       tr
-        th End
-        datetime(type="datetime" v-model="end")
+        th {{ $t('ui.eventEditor.end') }}
+        datetime(type="datetime" v-model="end" :disabled="busy")
       tr
-        th Duration
+        th {{ $t('ui.eventEditor.duration') }}
         td {{ editedEvent.duration | friendlyduration }}
 
     hr
 
     table(style="width: 100%")
       tr
-        th Key
-        th Value
+        th {{ $t('ui.eventEditor.key') }}
+        th {{ $t('ui.eventEditor.value') }}
       tr(v-for="(v, k) in editedEvent.data" :key="k")
         td
           b-input(disabled, :value="k", size="sm")
         td
-          b-checkbox(v-if="typeof event.data[k] === typeof true", v-model="editedEvent.data[k]", style="margin: 0.25em")
-          b-input(v-if="typeof event.data[k] === typeof 'string'", v-model="editedEvent.data[k]", size="sm")
-          b-input(v-if="typeof event.data[k] === 'number'", v-model.number="editedEvent.data[k]", size="sm", type="number")
+          b-checkbox(v-if="typeof event.data[k] === typeof true", v-model="editedEvent.data[k]", :disabled="busy", style="margin: 0.25em")
+          b-input(v-if="typeof event.data[k] === typeof 'string'", v-model="editedEvent.data[k]", :disabled="busy", size="sm")
+          b-input(v-if="typeof event.data[k] === 'number'", v-model.number="editedEvent.data[k]", :disabled="busy", size="sm", type="number")
 
     hr
 
+
     div.float-left
-      b-button.mx-1(@click="delete_(); close();" variant="danger")
+      b-button.mx-1(@click="delete_", variant="danger", :disabled="busy")
         icon.mx-1(name="trash")
-        | Delete
+        | {{ $t('common.delete') }}
     div.float-right
-      b-button.mx-1(@click="close")
+      b-button.mx-1(@click="close", :disabled="busy")
         icon.mx-1(name="times")
-        | Cancel
-      b-button.mx-1(@click="save(); close();", variant="primary")
+        | {{ $t('common.cancel') }}
+      b-button.mx-1(@click="save", variant="primary", :disabled="busy")
         icon.mx-1(name="save")
-        | Save
+        | {{ $t('common.save') }}
 </template>
 
 <style lang="scss"></style>
@@ -62,6 +68,7 @@ b-modal(v-if="event && event.id", :id="'edit-modal-' + event.id", ref="eventEdit
 //  - Search (soon)
 
 import moment from 'moment';
+import _ from 'lodash';
 
 import 'vue-awesome/icons/times';
 import 'vue-awesome/icons/save';
@@ -76,9 +83,36 @@ export default {
   data() {
     return {
       editedEvent: null,
+      draftIdentity: null,
+      draftSource: null,
+      loadSequence: 0,
+      disposed: false,
+      // Name of the mutation in flight ('save' / 'delete'), else null.
+      pending: null,
+      error: '',
     };
   },
   computed: {
+    selectionIdentity() {
+      return this.bucket_id && this.event && this.event.id
+        ? JSON.stringify([this.bucket_id, this.event.id])
+        : null;
+    },
+    // Object replacement is a new editing session even for the same bucket/ID
+    // (for example, reopening a timeline event after cancelling its draft).
+    selectionSource() {
+      return { identity: this.selectionIdentity, event: this.event };
+    },
+    draftReady() {
+      return (
+        this.editedEvent !== null &&
+        this.draftIdentity === this.selectionIdentity &&
+        this.draftSource === this.event
+      );
+    },
+    busy() {
+      return this.pending !== null;
+    },
     start: {
       get: function () {
         return moment(this.editedEvent.timestamp).format();
@@ -100,35 +134,125 @@ export default {
     },
   },
   watch: {
-    async event() {
-      await this.getEvent();
+    selectionSource() {
+      this.getEvent();
     },
   },
   mounted: async function () {
     await this.getEvent();
   },
+  beforeDestroy() {
+    this.disposed = true;
+    this.loadSequence++;
+  },
   methods: {
     async save() {
-      // This emit needs to be called first, otherwise it won't occur for some reason
-      // FIXME: but what if the replace fails? Then UI will incorrectly think event was replaced?
-      this.$emit('save', this.editedEvent);
-      await this.$aw.replaceEvent(this.bucket_id, this.editedEvent);
+      if (!this.draftReady || this.disposed) return;
+      // Capture before any async suspension: another selection can change
+      // this.editedEvent or this.bucket_id while replaceEvent is in-flight.
+      const savedEvent = _.cloneDeep(this.editedEvent);
+      const bucketId = this.bucket_id;
+      await this.runMutation('save', savedEvent, bucketId, () =>
+        this.$aw.replaceEvent(bucketId, savedEvent)
+      );
     },
     async delete_() {
-      // This emit needs to be called first, otherwise it won't occur for some reason
-      // FIXME: but what if the replace fails? Then UI will incorrectly think event was deleted?
-      this.$emit('delete', this.event);
-      await this.$aw.deleteEvent(this.bucket_id, this.event.id);
+      if (!this.draftReady || this.disposed) return;
+      const event = this.event;
+      const bucketId = this.bucket_id;
+      await this.runMutation('delete', event, bucketId, () =>
+        this.$aw.deleteEvent(bucketId, event.id)
+      );
+    },
+    // Runs one mutation against the server. Parents are told it succeeded only
+    // once the request actually has, so a failure leaves the editor open with
+    // the user's input intact and retryable.
+    //
+    // The modal is hidden before the success event is emitted: a parent
+    // reacting to it may destroy this component (it is usually rendered behind
+    // a v-if on the event being edited), and the ref would be gone by then.
+    async runMutation(name, payload, bucketId, request) {
+      if (this.pending) return;
+      const identity = this.selectionIdentity;
+      const source = this.selectionSource;
+      const sequence = this.loadSequence;
+      const stillSelected = () =>
+        !this.disposed &&
+        this.selectionIdentity === identity &&
+        this.selectionSource === source &&
+        this.loadSequence === sequence;
+      this.pending = name;
+      this.error = '';
+      try {
+        await request();
+      } catch (e) {
+        console.error(e);
+        if (stillSelected()) this.error = this.requestErrorMessage(e, name);
+        return;
+      } finally {
+        this.pending = null;
+      }
+
+      // The editor may have been pointed at a different event while the
+      // request was in flight; a late response must not act on the new one.
+      if (stillSelected()) {
+        this.hideModal();
+        this.$emit(name, payload);
+      } else if (!this.disposed && this.selectionIdentity === identity) {
+        // A reopened or reloaded draft may have read the event before this
+        // write committed. Invalidate it synchronously and read after the write;
+        // do not close the new editing session or let it submit stale data.
+        this.getEvent();
+      }
+      // The server did change, so this is reported even after the editor moved
+      // on. It carries the bucket, for parents that patch their view in place.
+      this.$emit(name === 'save' ? 'saved' : 'deleted', payload, bucketId);
+    },
+    requestErrorMessage(e, name) {
+      const response = e && e.response;
+      const serverMessage = response && response.data && response.data.message;
+      const verb = name === 'delete' ? 'delete' : 'save';
+      return serverMessage || (e && e.message) || `Failed to ${verb} event.`;
+    },
+    // Hiding is best-effort: the modal may already be gone if a parent
+    // re-rendered or destroyed this component.
+    hideModal() {
+      const modal = this.$refs.eventEditModal;
+      if (modal) modal.hide();
     },
     async getEvent() {
-      if (this.bucket_id && this.event && this.event.id) {
-        this.editedEvent = await this.$aw.getEvent(this.bucket_id, this.event.id);
-      } else {
-        this.editedEvent = null;
+      const source = this.selectionSource;
+      const identity = source.identity;
+      const sequence = ++this.loadSequence;
+      this.editedEvent = null;
+      this.draftIdentity = null;
+      this.draftSource = null;
+      this.error = '';
+      if (!identity || this.disposed) return;
+      const bucketId = this.bucket_id;
+      const eventId = this.event.id;
+      const stillSelected = () =>
+        !this.disposed && this.selectionSource === source && this.loadSequence === sequence;
+      try {
+        const event = await this.$aw.getEvent(bucketId, eventId);
+        if (stillSelected()) {
+          this.editedEvent = event;
+          this.draftIdentity = identity;
+          this.draftSource = source.event;
+        }
+      } catch (e) {
+        if (stillSelected()) {
+          const response = e && e.response;
+          this.error =
+            (response && response.data && response.data.message) ||
+            (e && e.message) ||
+            'Failed to load event.';
+        }
       }
     },
     close() {
-      this.$refs.eventEditModal.hide();
+      if (this.pending) return;
+      this.hideModal();
       this.$emit('close', this.event);
     },
   },

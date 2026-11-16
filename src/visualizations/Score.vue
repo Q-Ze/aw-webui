@@ -4,42 +4,42 @@ div
     button.score__help-btn(
       id="scoreHelp"
       type="button"
-      aria-label="How is the score calculated?"
+      :aria-label="$t('ui.score.helpTitle')"
     )
       icon(name="question-circle" scale="0.9")
     b-tooltip(target="scoreHelp" placement="left" triggers="hover focus")
-      | Sum of (hours &times; category score). Set category scores in #[b Settings &gt; Categories]. Positive scores reward activities you want to do more of; negative ones penalize distractions.
-    div.small.text-muted Score for {{ score_period_label }}
+      | {{ $t('ui.score.help') }}
+    div.small.text-muted {{ $t('ui.score.for') }} {{ score_period_label }}
     div.score-value(:class="score >= 0 ? 'text-success' : 'text-danger'")
       | {{score >= 0 ? '+' : ''}}{{ (Math.round(score * 10) / 10).toFixed(1) }}
     div.small.text-muted(v-if="!isNaN(score_productive_percent)")
-      | {{score_productive_percent.toFixed(1)}}% productive
+      | {{score_productive_percent.toFixed(1)}}% {{ $t('ui.score.productive') }}
   hr
   div
-    b Top productive
+    b {{ $t('ui.score.topProductive') }}
     div.mt-2(v-for="cat in top_productive" :key="cat.data.$category.join('>')")
       div.d-flex.align-items-center
         div
-          div {{cat.data.$category.slice(-1)[0]}}
+          div {{categorySegmentLabel(cat.data.$category.slice(-1)[0])}}
           div.small.text-muted(v-if="cat.data.$category.length > 1")
-            | {{cat.data.$category.slice(0, -1).join(" > ")}}
+            | {{categoryPathLabel(cat.data.$category.slice(0, -1))}}
         div.ml-auto.text-success.h5.mb-0
           | +{{ (Math.round(cat.data.$total_score * 10) / 10).toFixed(1) }}
     p.text-muted.small.mb-0.mt-2(v-if="top_productive.length === 0")
-      | No productive categories recorded yet.
+      | {{ $t('ui.score.noProductive') }}
   hr
   div
-    b Top distracting
+    b {{ $t('ui.score.topDistracting') }}
     div.mt-2(v-for="cat in top_distracting" :key="cat.data.$category.join('>')")
       div.d-flex.align-items-center
         div
-          div {{cat.data.$category.slice(-1)[0]}}
+          div {{categorySegmentLabel(cat.data.$category.slice(-1)[0])}}
           div.small.text-muted(v-if="cat.data.$category.length > 1")
-            | {{cat.data.$category.slice(0, -1).join(" > ")}}
+            | {{categoryPathLabel(cat.data.$category.slice(0, -1))}}
         div.ml-auto.text-danger.h5.mb-0
           | {{ (Math.round(cat.data.$total_score * 10) / 10).toFixed(1) }}
     p.text-muted.small.mb-0.mt-2(v-if="top_distracting.length === 0")
-      | No distracting activity in this period.
+      | {{ $t('ui.score.noDistracting') }}
 </template>
 
 <style scoped>
@@ -75,6 +75,7 @@ import 'vue-awesome/icons/question-circle';
 import { useActivityStore } from '~/stores/activity';
 import { IEvent } from '~/util/interfaces';
 import { periodReadable } from '~/util/timeperiod';
+import { categoryPathLabel, categorySegmentLabel } from '~/util/categoryLabels';
 
 // TODO: Maybe add a "Category Tree"-style visualization?
 
@@ -117,6 +118,10 @@ export default {
         c => c.data.$total_score
       );
     },
+  },
+  methods: {
+    categoryPathLabel,
+    categorySegmentLabel,
   },
 };
 </script>

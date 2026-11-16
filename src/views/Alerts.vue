@@ -1,58 +1,56 @@
 <template lang="pug">
 div
-  h3 Alerts
+  h3 {{ $t('nav.alerts') }}
 
   // TODO: Call this "goals" instead? (alerts is more general, but goals might fit the most common use better
   // TODO: Support 'less than' goals
   // TODO: Send notifications when goals met
-  // TODO: Query from day start, not 24h ago
 
   b-alert(variant="warning" show)
-    | This feature is still in early development.
+    | {{ $t('ui.alerts.earlyDev') }}
 
   b-alert(v-if="error" show variant="danger")
     | {{error}}
 
   b-alert(v-if="hostnames.length === 0" show variant="info")
-    | No host with both window and AFK buckets is available, so alerts can't run yet.
-    | Install #[a(href="https://docs.activitywatch.net/en/latest/watchers.html") aw-watcher-window and aw-watcher-afk] to enable this view.
+    | {{ $t('ui.alerts.noHost') }}
 
   b-card(v-for="alert in alerts", :key="alert.name")
-    b-button.float-right(@click="deleteAlert(alert.name)" size="sm" variant="outline-danger")
+    b-button.float-right(@click="deleteAlert(alert.name)" size="sm" variant="outline-danger" :disabled="saving")
       icon(name="trash")
 
-    div Goal name: {{ alert.name }}
-    div Category: {{ alert.category.join(" > ") }}
-    div Current: {{ alertTime(alert.category) | friendlyduration }} / {{alert.goal}} minutes
-      span(v-if="alertTime(alert.category) >= alert.goal")
+    div {{ $t('ui.alerts.goalName') }}: {{ alert.name }}
+    div {{ $t('ui.alerts.category') }}: {{ alert.category.join(" > ") }}
+    div {{ $t('ui.alerts.current') }}: {{ alertTime(alert.category) | friendlyduration }} / {{alert.goal}} {{ $t('ui.alerts.minutes') }}
+      span(v-if="alertTime(alert.category) >= alert.goal * 60")
         icon.text-success(name="check")
       span(v-else)
         icon.text-muted(name="times")
 
   div.d-flex.align-items-center.mt-3
-    b-btn(@click="check" variant="success" :disabled="!hostname") Check
-    b-form-checkbox.ml-3.mb-0(v-model="autorefresh", @change="toggleAutoRefresh", switch) Auto-refresh every 10s
+    b-btn(@click="check" variant="success" :disabled="!hostname") {{ $t('ui.alerts.check') }}
+    b-form-checkbox.ml-3.mb-0(v-model="autorefresh", @change="toggleAutoRefresh", switch) {{ $t('ui.alerts.autoRefresh') }}
 
   small.text-muted(v-if="last_updated")
-    | Last updated #[time(:datetime="last_updated && last_updated.toISOString && last_updated.toISOString()") {{ last_updated | friendlytime }}]
+    | {{ $t('ui.alerts.lastUpdated') }} #[time(:datetime="last_updated && last_updated.toISOString && last_updated.toISOString()") {{ last_updated | friendlytime }}]
 
   hr
 
   div
-    h4 New alert
-    b-form-group(label="Name" label-cols-md=2)
+    h4 {{ $t('ui.alerts.newAlert') }}
+    b-form-group(:label="$t('ui.alerts.name')" label-cols-md=2)
       b-input(v-model="editing_alert.name")
-    b-form-group(label="Category" label-cols-md=2)
+    b-form-group(:label="$t('ui.alerts.category')" label-cols-md=2)
       b-select(v-model="editing_alert.category")
         option(v-for="category in categories" :value="category.value") {{ category.text }}
-    b-form-group(label="Goal" label-cols-md=2)
-      b-input-group(append="minutes")
+    b-form-group(:label="$t('ui.alerts.goal')" label-cols-md=2)
+      b-input-group(:append="$t('ui.alerts.minutes')")
         b-input(v-model="editing_alert.goal" type="number")
 
     div
-      b-btn(@click="addAlert" variant="success")
+      b-btn(@click="addAlert" variant="success" :disabled="saving")
         icon(name="plus")
-        | Add alert
+        | {{ $t('ui.alerts.add') }}
 </template>
 
 <style scoped lang="scss"></style>
@@ -69,6 +67,9 @@ import 'vue-awesome/icons/trash';
 
 import { useBucketsStore } from '~/stores/buckets';
 import { useCategoryStore } from '~/stores/categories';
+import { useSettingsStore } from '~/stores/settings';
+import { get_day_start_with_offset } from '~/util/time';
+import { cleanAlertGoal, cleanAlertGoals, getDefaultAlertGoals } from '~/util/alerts';
 
 export default {
   name: 'Alerts',
@@ -76,15 +77,18 @@ export default {
     return {
       bucketsStore: useBucketsStore(),
       categoryStore: useCategoryStore(),
+      settingsStore: useSettingsStore(),
 
       // TODO: Support negative goals (avoid distractions)
-      alerts: [
-        { name: 'Work', category: ['Work'], goal: 100 },
-        { name: 'Media', category: ['Media'], goal: 10 },
-      ],
+      // Loaded from settings in mounted(); sample goals are seeded there only
+      // when nothing has been stored yet.
+      alerts: [],
       editing_alert: {},
 
-      alert_times: {},
+      // Set while an add/delete is being persisted, to block duplicate writes.
+      saving: false,
+
+      alert_times: [],
 
       error: '',
 
@@ -104,21 +108,27 @@ export default {
   },
   computed: {
     categories: function () {
-      return this.categoryStore.category_select(true);
+      return this.categoryStore.category_select(true, key => this.$t(key) as string);
     },
     alertTime: function () {
       return cat => {
         let time = 0;
-        _.map(Object.entries(this.alert_times), ([c, t]) => {
-          if (c.startsWith(cat.join(','))) {
-            if (typeof t === 'number') time += t;
+        for (const { category, duration } of this.alert_times) {
+          if (cat.every((segment, index) => category[index] === segment)) {
+            time += duration;
           }
-        });
+        }
         return time;
       };
     },
   },
   mounted: async function () {
+    await this.settingsStore.ensureLoaded();
+    // A stored empty list is a deliberate "no goals" and must be preserved;
+    // only a first run (nothing ever stored) gets the sample goals.
+    this.alerts = this.settingsStore.hasStoredAlerts
+      ? cleanAlertGoals(this.settingsStore.alerts)
+      : getDefaultAlertGoals();
     await this.bucketsStore.ensureLoaded();
     await this.categoryStore.load();
     // Filter to hosts that actually have the buckets we query against.
@@ -131,12 +141,44 @@ export default {
     this.hostname = this.hostnames[0];
   },
   methods: {
-    addAlert: function () {
-      // TODO: Persist to settings/localstorage
-      this.alerts = this.alerts.concat({ ...this.editing_alert });
+    addAlert: async function () {
+      const goal = cleanAlertGoal(this.editing_alert);
+      if (goal === null) {
+        this.error = 'A goal needs a name, a category, and a positive number of minutes.';
+        return;
+      }
+      if (await this.persistAlerts(this.alerts.concat(goal))) {
+        this.editing_alert = {};
+      }
     },
-    deleteAlert: function (name) {
-      this.alerts = this.alerts.filter(a => a.name !== name);
+    deleteAlert: async function (name) {
+      await this.persistAlerts(this.alerts.filter(a => a.name !== name));
+    },
+
+    // Save the given goals, keeping the shown list and storage in step. Returns
+    // whether the write succeeded; on failure the previous list is restored so
+    // the view never implies a failed write was durable.
+    persistAlerts: async function (alerts) {
+      if (this.saving) return false;
+      const previous = this.alerts;
+      const previousStored = this.settingsStore.alerts;
+      this.saving = true;
+      this.alerts = alerts;
+      try {
+        await this.settingsStore.update({ alerts });
+        this.error = '';
+        return true;
+      } catch (e) {
+        console.error(e);
+        this.alerts = previous;
+        // update() patches the store before persisting; roll back that state
+        // too, so remounts and unrelated settings saves cannot revive it.
+        this.settingsStore.$patch({ alerts: previousStored });
+        this.error = 'Failed to save alert goals. Please try again.';
+        return false;
+      } finally {
+        this.saving = false;
+      }
     },
 
     toggleAutoRefresh: function () {
@@ -164,10 +206,19 @@ export default {
 
       const query_array = querystr_to_array(query);
 
-      // Get start of today
-      const start = moment().subtract(1, 'days').startOf('day');
-      const end = moment(start).add(1, 'days');
-      const timeperiods = [start.format() + '/' + end.format()];
+      // Query from the start of the current activity day through now. The
+      // activity day respects the user's startOfDay setting (default 04:00),
+      // so before that boundary we are still on the previous calendar day.
+      // `now` is captured once so the interval stays consistent even if the
+      // query straddles the boundary.
+      // Build today's boundary on the calendar, rather than subtracting the
+      // offset as elapsed time, which picks the wrong day around DST changes.
+      const now = moment();
+      let start = moment(get_day_start_with_offset(moment(now).startOf('day')));
+      if (start.isAfter(now)) {
+        start = moment(get_day_start_with_offset(moment(now).startOf('day').subtract(1, 'day')));
+      }
+      const timeperiods = [start.format() + '/' + now.format()];
 
       try {
         this.status = 'searching';
@@ -176,20 +227,19 @@ export default {
         this.error = '';
       } catch (e) {
         console.error(e);
-        this.error = e.response.data.message;
+        this.error = e?.response?.data?.message || e?.message || this.$t('common.requestFailed');
         return;
       } finally {
         this.status = null;
       }
 
-      const grouped = _.groupBy(this.events, e => e.data.$category);
-      const sumCats = Object.fromEntries(
-        _.map(Object.entries(grouped), entry => {
-          const [group, events] = entry;
-          return [group.split(','), _.sumBy(events, 'duration')];
-        })
-      );
-      this.alert_times = sumCats;
+      // JSON keys preserve segment boundaries, including commas inside names.
+      const categorized = this.events.filter(e => Array.isArray(e.data.$category));
+      const grouped = _.groupBy(categorized, e => JSON.stringify(e.data.$category));
+      this.alert_times = Object.values(grouped).map(events => ({
+        category: events[0].data.$category,
+        duration: _.sumBy(events, 'duration'),
+      }));
 
       this.last_updated = new Date();
     },

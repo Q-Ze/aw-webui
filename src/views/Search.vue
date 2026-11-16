@@ -1,47 +1,69 @@
 <template lang="pug">
 div
-  h3 Search
+  h3 {{ $t('search.title') }}
 
   b-alert(v-if="error" show variant="danger")
     | {{error}}
 
   b-input-group(size="lg")
-    b-input(v-model="pattern" v-on:keyup.enter="search()" placeholder="Regex pattern to search for")
+    b-input(v-model="pattern" v-on:keyup.enter="search()" :placeholder="$t('ui.search.regexPlaceholder')")
     b-input-group-append
       b-button(type="button", @click="search()" variant="success")
         icon.mr-1(name="search")
-        | Search
+        | {{ $t('search.searchBtn') }}
 
   div.d-flex.mt-1
-    span.mr-auto.small.text-muted Hostname: {{queryOptions.hostname}}
+    span.mr-auto.small.text-muted {{ $t('ui.search.hostname') }}: {{queryOptions.hostname}}
     b-button.border-0(size="sm", variant="outline-dark" @click="show_options = !show_options")
       span(v-if="!show_options")
-        | #[icon(name="angle-double-down")] Show options
+        | #[icon(name="angle-double-down")] {{ $t('ui.search.showOptions') }}
       span(v-else)
-        | #[icon(name="angle-double-up")] Hide options
+        | #[icon(name="angle-double-up")] {{ $t('ui.search.hideOptions') }}
 
   div(v-show="show_options")
-    h4 Options
+    h4 {{ $t('search.options') }}
     aw-query-options(v-model="queryOptions")
 
   div(v-if="status == 'searching'")
-    div #[icon(name="spinner" pulse)] Searching...
+    div #[icon(name="spinner" pulse)] {{ $t('ui.search.searching') }}
 
-  div(v-if="events != null")
+  div(v-if="events != null || browserEvents != null")
     hr
 
-    aw-selectable-eventview(:events="events")
+    div(v-if="events && events.length > 0")
+      h5 {{ $t('extraViews.search.windowEvents') }} ({{ events.length }})
+      aw-selectable-eventview(:events="events")
+
+    div(v-if="browserEvents && browserEvents.length > 0")
+      h5 {{ $t('extraViews.search.browserEvents') }} ({{ browserEvents.length }})
+      table.table.table-sm.table-hover
+        thead
+          tr
+            th {{ $t('extraViews.search.timestamp') }}
+            th {{ $t('extraViews.search.duration') }}
+            th URL
+            th {{ $t('extraViews.search.title') }}
+        tbody
+          tr(v-for="e in browserEvents" :key="e.id || e.timestamp")
+            td {{ e.timestamp | shortdate }} {{ e.timestamp | shorttime }}
+            td {{ e.duration | friendlyduration }}
+            td
+              a(:href="e.data.url" target="_blank" rel="noopener") {{ e.data.url }}
+            td {{ e.data.title }}
+
+    div(v-if="status !== 'searching' && events && events.length === 0 && (!browserEvents || browserEvents.length === 0)")
+      p.text-muted {{ $t('extraViews.search.noResults') }}
 
     div
-      | Didn't find what you were looking for?
+      | {{ $t('search.notFound') }}
       br
-      | Add a week to the search: #[b-button(size="sm" variant="outline-dark" @click="extendByWeek()") +1 week]
+      | {{ $t('search.addWeek') }} #[b-button(size="sm" variant="outline-dark" @click="extendByWeek()") {{ $t('search.addWeekBtn') }}]
 </template>
 
 <script lang="ts">
 import _ from 'lodash';
 import moment from 'moment';
-import { canonicalEvents, querystr_to_array } from '~/queries';
+import { canonicalEvents, browserSearchQuery, querystr_to_array } from '~/queries';
 import { useBucketsStore } from '~/stores/buckets';
 
 import 'vue-awesome/icons/search';
@@ -55,9 +77,11 @@ export default {
     return {
       pattern: '',
       events: null,
+      browserEvents: null,
 
       status: null,
       error: '',
+      searchSequence: 0,
 
       // Options
       show_options: false,
@@ -67,33 +91,86 @@ export default {
       },
     };
   },
+  beforeDestroy() {
+    this.searchSequence++;
+  },
   methods: {
     search: async function () {
-      let query = canonicalEvents({
-        ...useBucketsStore().desktopBucketIds(this.queryOptions.hostname),
-        filter_afk: this.queryOptions.filter_afk,
-        categories: [[['searched'], { type: 'regex', regex: this.pattern, ignore_case: true }]],
-        filter_categories: [['searched']],
-      });
-      query += '; RETURN = events;';
+      const sequence = ++this.searchSequence;
+      // A submission owns its inputs even if the form changes during bucket loading.
+      const pattern = this.pattern;
+      const { hostname, start, stop, filter_afk } = this.queryOptions;
+      this.status = 'searching';
+      this.error = '';
 
-      const query_array = querystr_to_array(query);
-      const timeperiods = [
-        moment(this.queryOptions.start).format() + '/' + moment(this.queryOptions.stop).format(),
-      ];
       try {
-        this.status = 'searching';
-        const data = await this.$aw.query(timeperiods, query_array);
-        // Every hit carries the synthetic `searched` category the query uses
-        // for filtering; it is not a real category, so drop it from results.
-        const events = data[0].map(e => ({ ...e, data: _.omit(e.data, '$category') }));
-        this.events = _.orderBy(events, ['timestamp'], ['desc']);
-        this.error = '';
+        const timeperiods = [moment(start).format() + '/' + moment(stop).format()];
+
+        // Window search query
+        let windowQuery = canonicalEvents({
+          ...useBucketsStore().desktopBucketIds(hostname),
+          filter_afk,
+          categories: [[['searched'], { type: 'regex', regex: pattern, ignore_case: true }]],
+          filter_categories: [['searched']],
+        });
+        windowQuery += '; RETURN = events;';
+        const windowQueryArray = querystr_to_array(windowQuery);
+
+        // Look up browser buckets for this host. A failure here (e.g. the bucket
+        // list cannot be loaded) must not block the window-only search.
+        let browserQueryArray: string[] = [];
+        try {
+          const bucketsStore = useBucketsStore();
+          await bucketsStore.ensureLoaded();
+          const browserBuckets = bucketsStore.bucketsBrowser(hostname);
+          browserQueryArray = browserSearchQuery(browserBuckets, pattern);
+        } catch (e) {
+          console.error('Failed to load browser buckets for search', e);
+        }
+
+        if (sequence !== this.searchSequence) return;
+
+        // Each source can fail independently (e.g. a browser-only host has no
+        // window/AFK buckets). Keep successful matches and report partial failures.
+        const errors: string[] = [];
+        const results = await Promise.all([
+          this.$aw.query(timeperiods, windowQueryArray).catch(e => {
+            console.error('Window search failed', e);
+            errors.push(`Window search: ${e.response?.data?.message ?? String(e)}`);
+            return null;
+          }),
+          browserQueryArray.length > 0
+            ? this.$aw.query(timeperiods, browserQueryArray).catch(e => {
+                console.error('Browser search failed', e);
+                errors.push(`Browser search: ${e.response?.data?.message ?? String(e)}`);
+                return null;
+              })
+            : Promise.resolve(null),
+        ]);
+        if (sequence !== this.searchSequence) return;
+        this.error = errors.join('; ');
+
+        // Every window hit carries the synthetic `searched` category the query
+        // uses for filtering; it is not a real category, so drop it from results.
+        const windowResults = results[0] ? results[0][0] : [];
+        const windowEvents = windowResults.map(e => ({ ...e, data: _.omit(e.data, '$category') }));
+        this.events = _.orderBy(windowEvents, ['timestamp'], ['desc']);
+        const browserResults = results[1] ? results[1][0] : [];
+        // An event can match the pattern in both its url and title, which the
+        // query concatenates into two entries; dedup by event ID so each
+        // database record appears at most once.
+        this.browserEvents = _.orderBy(
+          _.uniqBy(browserResults, (e: any) => e.id),
+          ['timestamp'],
+          ['desc']
+        );
       } catch (e) {
         console.error(e);
-        this.error = e.response.data.message;
+        if (sequence === this.searchSequence) {
+          this.error = e.response?.data?.message ?? String(e);
+        }
       } finally {
-        this.status = null;
+        if (sequence === this.searchSequence) this.status = null;
       }
     },
     extendByWeek() {

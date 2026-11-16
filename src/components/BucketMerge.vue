@@ -1,43 +1,39 @@
 <template lang="pug">
 div
-  h3 Merge buckets
+  h3 {{ $t('ui.bucketMerge.title') }}
   p.small
-    | Sometimes, you might want to merge the events of two buckets together into one.
-    | This is commonly useful to address the case where your hostname might have changed,
-    | creating two buckets for the same watcher and host, which you want to combine together again.
+    | {{ $t('ui.bucketMerge.intro') }}
 
   // TODO: select which buckets to merge
   b-row
     b-col
-      h4 Bucket from
+      h4 {{ $t('ui.bucketMerge.from') }}
       b-form-select(v-model="bucket_from" :options="buckets" :disabled="buckets.length === 0")
       p.small
-        | Select the bucket from which you want to merge the events.
-        | This bucket will be deleted after the merge.
+        | {{ $t('ui.bucketMerge.fromHelp') }}
       p.small(v-if="events_from !== null")
-        | Events: {{ events_from.length }}
+        | {{ $t('ui.bucketMerge.events') }}: {{ events_from.length }}
     b-col
-      h4 Bucket to
+      h4 {{ $t('ui.bucketMerge.to') }}
       b-form-select(v-model="bucket_to" :options="buckets" :disabled="buckets.length === 0")
       p.small
-        | Select the bucket to which you want to merge the events.
-        | This bucket will remain after the merge.
+        | {{ $t('ui.bucketMerge.toHelp') }}
       p.small(v-if="events_to !== null")
-        | Events: {{ events_to.length }}
+        | {{ $t('ui.bucketMerge.events') }}: {{ events_to.length }}
 
   // TODO: check for overlapping events
   div(v-if="overlappingEvents !== null && overlappingEvents.length > 0")
-    h3 Overlapping events
+    h3 {{ $t('ui.bucketMerge.overlapping') }}
     p
-      | The following {{ overlappingEvents.length }} events are overlapping:
+      | {{ $t('ui.bucketMerge.overlapFound', { count: overlappingEvents.length }) }}
       ul
         li(v-for="event in overlappingEvents")
           | {{ event[0].start }} - {{ event[0].end }} ({{ event[0].event.id }})
-          | overlaps with
+          | {{ $t('ui.bucketMerge.overlapsWith') }}
           | {{ event[1].start }} - {{ event[1].end }} ({{ event[1].event.id }})
 
   // TODO: confirm dialog
-  b-button(variant="success" :disabled="!validate" @click="merge()") Merge
+  b-button(variant="success" :disabled="!validate" @click="merge()") {{ $t('ui.bucketMerge.merge') }}
 
   // TODO: delete old bucket? (ask user to backup their db if they want to be able to restore after delete)
 </template>
@@ -55,18 +51,32 @@ export default {
       bucket_to: null,
       events_from: null,
       events_to: null,
+      loaded_from: null,
+      loaded_to: null,
+      request_from: 0,
+      request_to: 0,
     };
   },
   computed: {
+    inputsLoaded() {
+      return (
+        this.bucket_from !== null &&
+        this.bucket_to !== null &&
+        this.loaded_from === this.bucket_from &&
+        this.loaded_to === this.bucket_to &&
+        Array.isArray(this.events_from) &&
+        Array.isArray(this.events_to)
+      );
+    },
     validate() {
       const set = this.bucket_from !== null && this.bucket_to !== null;
       const not_same = this.bucket_from !== this.bucket_to;
       const not_overlapping =
         this.overlappingEvents !== null && this.overlappingEvents.length === 0;
-      return set && not_same && not_overlapping;
+      return set && this.inputsLoaded && not_same && not_overlapping;
     },
     overlappingEvents() {
-      if (this.events_from === null || this.events_to === null) {
+      if (!this.inputsLoaded) {
         return null;
       }
       return overlappingEvents(this.events_from, this.events_to);
@@ -74,10 +84,25 @@ export default {
   },
   watch: {
     bucket_from: async function (new_bucket_id) {
-      this.events_from = await this.getEvents(new_bucket_id);
+      const request = ++this.request_from;
+      this.events_from = null;
+      this.loaded_from = null;
+      if (new_bucket_id === null) return;
+      // Await the client directly: the global async-method mixin swallows errors.
+      const events = await getClient().getEvents(new_bucket_id);
+      if (request !== this.request_from || new_bucket_id !== this.bucket_from) return;
+      this.events_from = events;
+      this.loaded_from = new_bucket_id;
     },
     bucket_to: async function (new_bucket_id) {
-      this.events_to = await this.getEvents(new_bucket_id);
+      const request = ++this.request_to;
+      this.events_to = null;
+      this.loaded_to = null;
+      if (new_bucket_id === null) return;
+      const events = await getClient().getEvents(new_bucket_id);
+      if (request !== this.request_to || new_bucket_id !== this.bucket_to) return;
+      this.events_to = events;
+      this.loaded_to = new_bucket_id;
     },
   },
   mounted() {
@@ -85,6 +110,7 @@ export default {
   },
   methods: {
     merge: async function () {
+      if (!this.validate) return;
       const client = getClient();
       const events = this.events_from;
       const bucket_id = this.bucket_to;
@@ -97,10 +123,6 @@ export default {
       this.buckets = Object.keys(buckets).map(bucket_id => {
         return { value: bucket_id, text: bucket_id };
       });
-    },
-    getEvents: async function (bucket_id) {
-      const client = getClient();
-      return await client.getEvents(bucket_id);
     },
   },
 };

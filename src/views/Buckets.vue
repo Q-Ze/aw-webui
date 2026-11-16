@@ -16,7 +16,7 @@ div
           span.font-weight-bold {{ device.hostname }}
           b-badge.ml-2(v-if="serverStore.info && serverStore.info.hostname == device.hostname" variant="info") {{ $t('buckets.thisDevice') }}
           div.small.text-muted(v-if="device.device_id && device.hostname !== device.device_id")
-            | ID: {{ device.device_id }}
+            | {{ $t('ui.buckets.id') }}: {{ device.device_id }}
           div.small(v-if="deviceHasEvents(device)")
             span.text-muted {{ $t('buckets.lastUpdatedInline') }}&nbsp;
             time(:class="{'text-success': isRecent(device.last_updated)}",
@@ -45,39 +45,32 @@ div
           icon.mr-1(name="trash")
           | {{ $t('buckets.deleteAllForHost') }}
 
-    b-table.mb-0.bucket-table(
-      small, hover,
-      :items="device.buckets",
-      :fields="fields"
-    )
-      template(v-slot:cell(id)="data")
-        small.text-monospace.bucket-id(:title="data.item.id") {{ data.item.id }}
-      template(v-slot:cell(last_updated)="data")
-        time.small.bucket-updated(v-if="bucketHasEvents(data.item)",
-                                 :class="{'text-success': isRecent(data.item.last_updated)}",
-                                 :datetime="data.item.last_updated",
-                                 :title="data.item.last_updated")
-          span.d-md-none {{ compactRelativeTime(data.item.last_updated, true) }}
-          span.d-none.d-md-inline {{ compactRelativeTime(data.item.last_updated) }}
-        small.text-muted(v-else) {{ $t('buckets.noEvents') }}
-      template(v-slot:cell(actions)="data")
-        b-button-group(size="sm")
-          b-button(variant="primary", :to="'/buckets/' + data.item.id", :title="$t('buckets.openBucket')")
-            icon.d-none.d-md-inline-block.mr-1(name="folder-open")
-            | {{ $t('common.open') }}
-          b-dropdown.kebab-dropdown(variant="outline-secondary", toggle-class="border-0", size="sm", right, no-caret, boundary="window", :title="$t('common.more')")
-            template(v-slot:button-content)
-              icon(name="ellipsis-v")
-            b-dropdown-item(@click="export_bucket_json(data.item.id)", :title="$t('buckets.exportBucketJson')")
-              icon.mr-1(name="download")
-              | {{ $t('buckets.exportBucketJson') }}
-            b-dropdown-item(@click="export_csv(data.item.id)", :title="$t('buckets.exportEventsCsv')")
-              icon.mr-1(name="download")
-              | {{ $t('buckets.exportEventsCsv') }}
-            b-dropdown-divider
-            b-dropdown-item-button(@click="openDeleteBucketModal(data.item.id)", :title="$t('buckets.deleteBucket')", button-class="text-danger")
-              icon.mr-1(name="trash")
-              | {{ $t('buckets.deleteBucket') }}
+    //- A list rather than a table: the name opens the bucket, the timestamp
+    //- takes only the width it needs, and per-bucket actions live in the kebab.
+    ul.list-unstyled.mb-0.bucket-list
+      li.bucket-row(v-for="bucket in sortedBuckets(device)", :key="bucket.id")
+        router-link.bucket-link(:to="'/buckets/' + bucket.id", :title="$t('buckets.openBucket') + ': ' + bucket.id")
+          small.text-monospace.bucket-id {{ bucket.id }}
+          time.small.bucket-updated(v-if="bucketHasEvents(bucket)",
+                                   :class="{'text-success': isRecent(bucket.last_updated)}",
+                                   :datetime="bucket.last_updated",
+                                   :title="bucket.last_updated")
+            span.d-md-none {{ compactRelativeTime(bucket.last_updated, true) }}
+            span.d-none.d-md-inline {{ compactRelativeTime(bucket.last_updated) }}
+          small.text-muted.bucket-updated(v-else) {{ $t('buckets.noEvents') }}
+        b-dropdown.kebab-dropdown(variant="outline-secondary", toggle-class="border-0", size="sm", right, no-caret, boundary="window", :title="$t('common.more')")
+          template(v-slot:button-content)
+            icon(name="ellipsis-v")
+          b-dropdown-item(@click="export_bucket_json(bucket.id)", :title="$t('buckets.exportBucketJson')")
+            icon.mr-1(name="download")
+            | {{ $t('buckets.exportBucketJson') }}
+          b-dropdown-item(@click="export_csv(bucket.id)", :title="$t('buckets.exportEventsCsv')")
+            icon.mr-1(name="download")
+            | {{ $t('buckets.exportEventsCsv') }}
+          b-dropdown-divider
+          b-dropdown-item-button(@click="openDeleteBucketModal(bucket.id)", :title="$t('buckets.deleteBucket')", button-class="text-danger")
+            icon.mr-1(name="trash")
+            | {{ $t('buckets.deleteBucket') }}
 
     div(v-for="msg in runChecks(device)" :key="msg")
       b-alert.mt-2.mb-0.py-1.px-2.small(show variant="warning")
@@ -134,7 +127,8 @@ div
         | {{ $t('buckets.importSuccess') }}
       b-alert(v-if="import_error" show variant="danger" dismissible @dismissed="import_error = null")
         | {{ import_error }}
-      b-form-file(v-model="import_file"
+      b-form-file(:value="import_file"
+                  @input="onImportFile"
                   :placeholder="$t('buckets.importPlaceholder')"
                   :drop-placeholder="$t('buckets.importDrop')")
       div.mt-2(v-if="import_file")
@@ -159,7 +153,7 @@ div
   b-alert(show)
     | {{ $t('buckets.moreWatchers') }} #[a(href="https://docs.activitywatch.net/en/latest/watchers.html") {{ $t('buckets.docsLink') }}].
 
-  aw-devonly(reason="This section is still under development")
+  aw-devonly(:reason="$t('ui.devOnly.bucketTools')")
     h4.p-2 {{ $t('buckets.tools') }}
 
     hr
@@ -189,54 +183,51 @@ div
   margin-bottom: 1em;
 }
 
+// No `opacity` here: opacity < 1 makes the card a stacking context, which
+// traps its dropdown menus underneath the cards below it.
 .bucket-card--unknown {
-  opacity: 0.85;
   background: #fbfbfb;
 }
 
-.bucket-table {
-  table-layout: fixed;
+.bucket-row {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid #dee2e6;
 }
 
-::v-deep .bucket-table td {
-  vertical-align: middle;
+.bucket-row:hover {
+  background: rgba(0, 0, 0, 0.04);
 }
 
-// Phones: just enough for the short labels. md+: room for the folder icon
-// and longer translations of "Open".
-::v-deep .bucket-table .col-updated {
-  width: 7rem;
+.bucket-link {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  min-width: 0;
+  padding: 0.4rem 0.3rem;
+  color: inherit;
 }
 
-::v-deep .bucket-table .col-actions {
-  width: 6.5rem;
+.bucket-link:hover {
+  text-decoration: none;
 }
 
-@media (min-width: 768px) {
-  ::v-deep .bucket-table .col-updated {
-    width: 9rem;
-  }
-
-  ::v-deep .bucket-table .col-actions {
-    width: 10rem;
-  }
+.bucket-link:hover .bucket-id {
+  text-decoration: underline;
 }
 
-.bucket-updated {
-  white-space: nowrap;
-}
-
-::v-deep .bucket-table td .btn {
-  white-space: nowrap;
-}
-
-::v-deep .bucket-id {
-  display: inline-block;
-  max-width: 100%;
+.bucket-id {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  vertical-align: middle;
+}
+
+.bucket-updated {
+  flex: none;
+  margin-left: 0.75rem;
+  white-space: nowrap;
 }
 
 ::v-deep .kebab-dropdown > .btn {
@@ -279,13 +270,30 @@ import { compact_relative_time } from '~/util/time';
 // `asyncErrorCapturedMixin` wraps every async method so that its rejection is
 // reported to the global `ErrorBoundary` and the *returned* promise resolves.
 // A wrapped `importBuckets` would therefore never reject inside the
-// `import_file` watcher below, and a failed import would still set
+// `onImportFile` handler below, and a failed import would still set
 // `import_success = true` (showing a success alert next to the error).
 async function importBuckets(aw, importFile) {
   const formData = new FormData();
   formData.append('buckets.json', importFile);
   const headers = { 'Content-Type': 'multipart/form-data' };
   return aw.req.post('/0/import', formData, { headers });
+}
+
+// Like importBuckets, keep rejection observable by the caller's local catch.
+async function reconcileHostDeletion(vm, selection) {
+  if (!selection.reconcileIds.length) return;
+  // ID-only DELETE acknowledgements cannot identify the incarnation removed.
+  await vm.bucketsStore.loadBuckets();
+  selection.bucketIds = selection.bucketIds.filter(id => {
+    if (!selection.reconcileIds.includes(id)) return true;
+    const bucket = vm.bucketsStore.getBucket(id);
+    return bucket && bucket.created?.valueOf() === selection.bucketCreated[id];
+  });
+  selection.bucketCount = selection.bucketIds.length;
+  vm.delete_host_reconcile_ids = vm.delete_host_reconcile_ids.filter(
+    id => !selection.reconcileIds.includes(id)
+  );
+  selection.reconcileIds = [];
 }
 
 export default {
@@ -301,12 +309,14 @@ export default {
       serverStore: useServerStore(),
 
       import_file: null,
+      import_request_id: 0,
       import_error: null,
       import_success: false,
       delete_bucket_selected: null,
       delete_host_selected: null,
       deleting_host: false,
       delete_host_error: null,
+      delete_host_reconcile_ids: [] as string[],
       export_inflight: 0,
       export_error: null as string | null,
     };
@@ -314,31 +324,6 @@ export default {
   computed: {
     exporting() {
       return this.export_inflight > 0;
-    },
-    fields() {
-      return [
-        {
-          key: 'id',
-          label: this.$t('buckets.bucketId'),
-          sortable: true,
-        },
-        // Fixed widths for the narrow columns (see .col-* styles): with
-        // table-layout: fixed, percentages squeezed the Open + kebab group
-        // past the card edge on phones. The ID column takes the rest and
-        // ellipsizes.
-        {
-          key: 'last_updated',
-          label: this.$t('buckets.updated'),
-          sortable: true,
-          thClass: 'col-updated',
-        },
-        {
-          key: 'actions',
-          label: '',
-          thClass: 'col-actions',
-          tdClass: 'text-right',
-        },
-      ];
     },
     deleteHostModalTitle() {
       if (this.delete_host_selected) {
@@ -349,31 +334,44 @@ export default {
       return this.$t('buckets.deleteHostTitle');
     },
   },
-  watch: {
-    import_file: async function (_new_value, _old_value) {
-      if (this.import_file != null) {
-        // Clear the previous outcome up-front so a stale success/error alert
-        // isn't shown beside the spinner while the new import is in flight.
-        this.import_success = false;
-        this.import_error = null;
-        try {
-          await importBuckets(this.$aw, this.import_file);
-          this.import_error = null;
-          this.import_success = true;
-        } catch (err) {
-          const serverMessage = err?.response?.data?.message;
-          this.import_error = serverMessage || this.$t('buckets.importFailedGeneric');
-          this.import_success = false;
-        }
-        await this.bucketsStore.loadBuckets();
-        this.import_file = null;
-      }
-    },
-  },
   mounted: async function () {
     await this.bucketsStore.loadBuckets();
   },
   methods: {
+    async onImportFile(importFile) {
+      // BFormFile emits null again when our completed selection resets it.
+      // Preserve that outcome, but handle user selection/clear events immediately.
+      if (importFile === this.import_file) return;
+      const requestId = ++this.import_request_id;
+      this.import_file = importFile;
+      this.import_success = false;
+      this.import_error = null;
+      if (importFile == null) return;
+
+      try {
+        await importBuckets(this.$aw, importFile);
+        if (requestId === this.import_request_id) {
+          this.import_success = true;
+        }
+      } catch (err) {
+        if (requestId === this.import_request_id) {
+          const serverMessage = err?.response?.data?.message;
+          this.import_error = serverMessage || this.$t('buckets.importFailedGeneric');
+        }
+      }
+      // Submitted imports still finish and reconcile the catalogue even when
+      // another selection owns the UI. Refresh errors keep reaching ErrorBoundary.
+      try {
+        await this.bucketsStore.loadBuckets();
+      } finally {
+        if (requestId === this.import_request_id) {
+          this.import_file = null;
+        }
+      }
+    },
+    sortedBuckets: function (device) {
+      return [...device.buckets].sort((a, b) => a.id.localeCompare(b.id));
+    },
     compactRelativeTime: function (timestamp: string, unitOnly = false) {
       return compact_relative_time(timestamp, this.$i18n.locale, unitOnly);
     },
@@ -419,26 +417,85 @@ export default {
       this.$root.$emit('bv::hide::modal', 'delete-modal');
     },
     openDeleteHostModal: function (device) {
+      this.delete_host_error = null;
       this.delete_host_selected = {
         hostname: device.hostname,
         bucketCount: device.buckets.length,
         bucketIds: device.buckets.map(b => b.id),
+        bucketCreated: Object.fromEntries(device.buckets.map(b => [b.id, b.created?.valueOf()])),
+        reconcileIds: device.buckets
+          .map(b => b.id)
+          .filter(id => this.delete_host_reconcile_ids.includes(id)),
       };
       this.$root.$emit('bv::show::modal', 'delete-host-modal');
     },
+
     deleteBucketsForSelectedHost: async function () {
-      if (!this.delete_host_selected) return;
+      if (!this.delete_host_selected || this.deleting_host) return;
+      const selection = this.delete_host_selected;
+      const deletedIds = new Set<string>();
       this.deleting_host = true;
       this.delete_host_error = null;
       try {
+        // A failed reconciliation is retried before any further DELETE is sent.
+        if (selection.reconcileIds.length) await reconcileHostDeletion(this, selection);
         await this.bucketsStore.deleteBucketsByHost({
-          bucketIds: this.delete_host_selected.bucketIds,
+          bucketIds: [...selection.bucketIds],
+          onDeleted: bucketId => {
+            deletedIds.add(bucketId);
+            // Dismissal can outlive this operation, including its final reload.
+            // Retain the acknowledgement before consulting the current modal.
+            if (!this.delete_host_reconcile_ids.includes(bucketId)) {
+              this.delete_host_reconcile_ids.push(bucketId);
+            }
+            if (this.delete_host_selected !== selection) return;
+            selection.bucketIds = selection.bucketIds.filter(id => id !== bucketId);
+            selection.bucketCount = selection.bucketIds.length;
+          },
         });
-        this.$root.$emit('bv::hide::modal', 'delete-host-modal');
+        if (this.delete_host_selected === selection) {
+          this.$root.$emit('bv::hide::modal', 'delete-host-modal');
+        }
       } catch (err) {
-        this.delete_host_error =
-          err?.message || 'Deletion failed. Some buckets may not have been deleted.';
+        if (this.delete_host_selected === selection) {
+          this.delete_host_error = err?.message || this.$t('buckets.deleteFailed');
+        }
       } finally {
+        // Remove acknowledged stale entries. Reconfirmed replacements need a fresh
+        // read: the old request may have deleted them, or they may still exist.
+        // Old errors and close events still belong exclusively to their selection.
+        let current = this.delete_host_selected;
+        while (current && current !== selection) {
+          current.reconcileIds = [
+            ...new Set([
+              ...current.reconcileIds.filter(
+                id =>
+                  !deletedIds.has(id) || current.bucketCreated[id] !== selection.bucketCreated[id]
+              ),
+              ...current.bucketIds.filter(
+                id =>
+                  deletedIds.has(id) && current.bucketCreated[id] !== selection.bucketCreated[id]
+              ),
+            ]),
+          ];
+          this.delete_host_reconcile_ids = [
+            ...new Set([...this.delete_host_reconcile_ids, ...current.reconcileIds]),
+          ];
+          current.bucketIds = current.bucketIds.filter(
+            id => !deletedIds.has(id) || current.reconcileIds.includes(id)
+          );
+          current.bucketCount = current.bucketIds.length;
+          try {
+            await reconcileHostDeletion(this, current);
+          } catch (err) {
+            if (this.delete_host_selected === current) {
+              this.delete_host_error = err?.message || this.$t('buckets.deleteFailed');
+            }
+          }
+          if (this.delete_host_selected === current) break;
+          current = this.delete_host_selected;
+        }
+        // Single-flight spans dismiss/reopen; an old operation cannot overlap a new one.
         this.deleting_host = false;
       }
     },
@@ -469,7 +526,7 @@ export default {
         await downloadBlob(filename, response.data, 'application/json');
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        this.export_error = `Export failed: ${msg}`;
+        this.export_error = this.$t('buckets.exportFailed', { error: msg });
         console.error('JSON export failed:', e);
       } finally {
         this.export_inflight = Math.max(0, this.export_inflight - 1);
@@ -509,7 +566,7 @@ export default {
         await downloadBlob(filename, response.data, 'text/csv');
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        this.export_error = `Export failed: ${msg}`;
+        this.export_error = this.$t('buckets.exportFailed', { error: msg });
         console.error('CSV export failed:', e);
       } finally {
         this.export_inflight = Math.max(0, this.export_inflight - 1);

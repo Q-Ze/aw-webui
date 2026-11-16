@@ -14,8 +14,7 @@ div
     span.small.text-muted.ml-3(v-if="loading") 加载中…
     span.small.text-muted.ml-3(v-else-if="events.length === 0 && loaded") 该时间段没有窗口事件（需要 window/afk watcher）。
 
-  Timespiral(:events="events", :days="days")
-</template>
+  Timespiral(:events="events", :days="days")</template>
 
 <script lang="ts">
 import moment from 'moment';

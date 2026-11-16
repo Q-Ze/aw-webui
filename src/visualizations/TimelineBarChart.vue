@@ -3,9 +3,9 @@ div(v-if="datasets && datasets.length > 0")
   // Height set here to avoid elements jumping when loading Activity view
   bar(:chart-data="chartData" :chart-options="chartOptions" :height="height")
 div.small(v-else-if="datasets === null", style="font-size: 16pt; color: #aaa;")
-  | No data
+  | {{ $t('visualizations.noData') }}
 div.small(v-else, style="font-size: 16pt; color: #aaa;")
-  .aw-loading Loading...
+  .aw-loading {{ $t('common.loading') }}
 </template>
 
 <script lang="ts">
@@ -19,7 +19,14 @@ import {
   get_hour_offset,
   get_short_month_labels,
 } from '~/util/time';
-import { MAX_DAILY_BUCKETS, timeperiodsCalendarMonthsOfPeriod } from '~/util/timeperiod';
+import {
+  EXACT_HOURLY_MAX_MS,
+  MAX_DAILY_BUCKETS,
+  exactBucketLabels,
+  hourlyLabels,
+  timeperiodsCalendarMonthsOfPeriod,
+  timeperiodsHoursOfPeriod,
+} from '~/util/timeperiod';
 import { i18n } from '~/i18n';
 import { clampStackedHours } from '~/util/timelineClamp';
 
@@ -45,7 +52,7 @@ export default {
       type: Array,
       default: () => [
         {
-          label: 'Total time',
+          label: i18n.t('ui.timeline.totalTime'),
           backgroundColor: '#6699ff',
           data: Array.from({ length: 40 }, () => Math.floor(Math.random() * 40)),
         },
@@ -59,7 +66,7 @@ export default {
       type: Array,
       default: () => [1, 'day'],
     },
-    // Only the single-day hourly activity view should trim overlapping stacks.
+    // Only hourly activity views (single-day or exact interval) should trim overlapping stacks.
     // Other callers (Trends, Report, multi-day Activity) reuse the default
     // `[1, 'day']` timeperiod but pass per-day values, which must not be clamped.
     clamp_hourly: {
@@ -75,7 +82,13 @@ export default {
     labels() {
       const start = this.timeperiod_start;
       const [count, resolution] = this.timeperiod_length;
+      if (resolution === 'milliseconds') {
+        // Exact interval: the same clipped buckets the category query uses
+        return start ? exactBucketLabels({ start, length: [count, resolution] }) : [];
+      }
       if (resolution.startsWith('day') && count == 1) {
+        if (start) return hourlyLabels({ start, length: [count, resolution] });
+        // Reports aggregate by wall-clock hour without a selected calendar day.
         const hourOffset = get_hour_offset();
         return _.range(0, 24).map(h => `${(h + hourOffset) % 24}`);
       } else if (resolution.startsWith('day') && count > MAX_DAILY_BUCKETS) {
@@ -92,6 +105,14 @@ export default {
           date.setDate(date.getDate() + d);
           return format_date_short(date, i18n.locale);
         });
+      } else if (resolution === 'weeks') {
+        // One bar per week (Trends), labelled with each week's start date
+        return _.range(count).map(w => {
+          const date = new Date(start);
+          date.setHours(12, 0, 0, 0);
+          date.setDate(date.getDate() + 7 * w);
+          return format_date_short(date, i18n.locale);
+        });
       } else if (resolution.startsWith('week')) {
         // Look up days of the week from `start`
         return _.range(7).map(d => {
@@ -101,7 +122,7 @@ export default {
           return format_weekday_short(date);
         });
       } else if (resolution.startsWith('month')) {
-        // How many days are in the given month?
+        // How many days are in the month containing `start`?
         const date = new Date(start);
         const daysInMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
         return _.range(1, daysInMonth + 1).map(d =>
@@ -117,21 +138,32 @@ export default {
     chartData() {
       let datasets = _.sortBy(this.datasets, d => d.label);
       const [count, resolution] = this.timeperiod_length;
-      if (this.clamp_hourly && resolution.startsWith('day') && count == 1) {
-        datasets = clampStackedHours(datasets);
+      if (this.clamp_hourly) {
+        if (resolution.startsWith('day') && count === 1) {
+          datasets = clampStackedHours(datasets);
+        } else if (resolution === 'milliseconds' && count <= EXACT_HOURLY_MAX_MS) {
+          const bucketHours = timeperiodsHoursOfPeriod({
+            start: this.timeperiod_start,
+            length: [count, resolution],
+          }).map(period => period.length[0]);
+          datasets = clampStackedHours(datasets, bucketHours);
+        }
       }
       return {
         labels: this.labels,
         datasets,
         title: {
           display: true,
-          text: 'Timeline',
+          text: i18n.t('timeline.title'),
         },
       };
     },
     chartOptions(): ChartOptions {
       const [count, resolution] = this.timeperiod_length;
-      const singleDay = resolution.startsWith('day') && count === 1;
+      // Hourly buckets: a single day, or an exact interval of at most one day
+      const singleDay =
+        (resolution.startsWith('day') && count === 1) ||
+        (resolution === 'milliseconds' && count <= EXACT_HOURLY_MAX_MS);
       return {
         responsive: true,
         maintainAspectRatio: false,

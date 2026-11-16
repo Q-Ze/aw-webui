@@ -1,6 +1,7 @@
 import { setActivePinia, createPinia } from 'pinia';
 
 import { useSettingsStore } from '~/stores/settings';
+import { createClient, getClient } from '~/util/awclient';
 
 describe('settings store', () => {
   setActivePinia(createPinia());
@@ -9,6 +10,54 @@ describe('settings store', () => {
   beforeEach(() => {
     settingsStore.$reset();
     jest.restoreAllMocks();
+  });
+
+  test('load({save:true}) persists even when superseded by a concurrent load', async () => {
+    // Repro: start load({save:true}), complete a second load() before the
+    // first response arrives. The stale-response guard must still honour the
+    // save intent instead of silently discarding it.
+    (global as any).localStorage = {
+      getItem: () => null,
+      setItem: jest.fn(),
+      length: 0,
+      key: () => null,
+    };
+    Object.defineProperty(global.localStorage, Symbol.iterator, {
+      value: [][Symbol.iterator].bind([]),
+      configurable: true,
+    });
+
+    let resolveFirst!: (v: Record<string, unknown>) => void;
+    const fakeClient = {
+      get_settings: jest
+        .fn()
+        // First call blocks
+        .mockImplementationOnce(
+          () =>
+            new Promise(resolve => {
+              resolveFirst = resolve;
+            })
+        )
+        // Second call resolves immediately
+        .mockResolvedValueOnce({}),
+      req: { defaults: {} },
+    };
+    jest.spyOn(require('~/util/awclient'), 'getClient').mockReturnValue(fakeClient);
+
+    const save = jest.spyOn(settingsStore, 'save').mockResolvedValue();
+
+    const firstLoad = settingsStore.load({ save: true });
+    // Allow the second load to complete ahead of the first
+    await settingsStore.load();
+
+    expect(save).not.toHaveBeenCalled(); // second load had no save intent
+
+    resolveFirst({});
+    await firstLoad;
+
+    expect(save).toHaveBeenCalledTimes(1);
+
+    delete (global as any).localStorage;
   });
 
   test('ensureLoaded coalesces concurrent loads', async () => {
@@ -73,5 +122,130 @@ describe('settings store', () => {
 
     expect(steps).toEqual(['ensureLoaded', 'save']);
     expect(settingsStore.saved_queries).toEqual(savedQueries);
+  });
+
+  describe('saving alert goals', () => {
+    beforeAll(() => {
+      createClient();
+      // save() always mirrors the theme and landing page to localStorage.
+      (global as any).localStorage = { setItem: jest.fn() };
+    });
+    afterAll(() => {
+      delete (global as any).localStorage;
+    });
+
+    function fakeServer() {
+      const post = jest.fn().mockResolvedValue({});
+      jest
+        .spyOn(getClient(), 'get_settings')
+        .mockResolvedValue({ theme: 'light' } as Record<string, unknown>);
+      (getClient() as any).req = { post, defaults: {} };
+      // save() reloads afterwards; the server then has every posted key.
+      jest.spyOn(settingsStore, 'load').mockImplementation(async () => {
+        const posted = post.mock.calls.map(([url]) => url.split('/').pop());
+        settingsStore.$patch({
+          _storedKeys: [...new Set([...settingsStore._storedKeys, ...posted])],
+        });
+      });
+      settingsStore.$patch({ _loaded: true, _storedKeys: ['theme'] });
+      return post;
+    }
+    const postedKeys = (post: jest.Mock) => post.mock.calls.map(([url]) => url);
+
+    test('an unrelated save leaves never-saved alerts unsaved', async () => {
+      const post = fakeServer();
+      settingsStore.$patch({ theme: 'dark' });
+      await settingsStore.save();
+      expect(postedKeys(post)).toContain('/0/settings/theme');
+      expect(postedKeys(post)).not.toContain('/0/settings/alerts');
+    });
+
+    test('an explicit update saves alerts, even when emptied', async () => {
+      const post = fakeServer();
+      await settingsStore.update({ alerts: [] });
+      expect(post).toHaveBeenCalledWith('/0/settings/alerts', [], expect.anything());
+      expect(settingsStore.hasStoredAlerts).toBe(true);
+    });
+
+    test('a failed update does not mark alerts as stored', async () => {
+      const post = fakeServer();
+      post.mockRejectedValueOnce(new Error('offline'));
+      await expect(settingsStore.update({ alerts: [] })).rejects.toThrow('offline');
+      expect(settingsStore.hasStoredAlerts).toBe(false);
+    });
+
+    test('an older failing update cannot unmark alerts saved meanwhile', async () => {
+      const post = fakeServer();
+      let failOld!: (e: Error) => void;
+      post.mockImplementation(async url => {
+        if (url === '/0/settings/theme') {
+          await new Promise((_resolve, reject) => {
+            failOld = reject;
+          });
+        }
+        return {};
+      });
+      settingsStore.$patch({ theme: 'dark' });
+      const older = settingsStore.update({ theme: 'dark' });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      settingsStore.$patch({ theme: 'light' });
+      post.mockResolvedValue({});
+      await settingsStore.update({ alerts: [] });
+      failOld(new Error('offline'));
+      await expect(older).rejects.toThrow('offline');
+      expect(settingsStore.hasStoredAlerts).toBe(true);
+    });
+  });
+
+  describe('supporter flag', () => {
+    beforeAll(() => {
+      try {
+        createClient();
+      } catch {
+        // Another suite in this file already instantiated the global client.
+      }
+      (global as any).localStorage = { setItem: jest.fn() };
+    });
+    afterAll(() => {
+      delete (global as any).localStorage;
+    });
+
+    function fakeServer(initial: Record<string, unknown> = { theme: 'light' }) {
+      const post = jest.fn().mockResolvedValue({});
+      jest.spyOn(getClient(), 'get_settings').mockResolvedValue(initial);
+      (getClient() as any).req = { post, defaults: {} };
+      jest.spyOn(settingsStore, 'load').mockImplementation(async () => {
+        const posted = post.mock.calls.map(([url]) => url.split('/').pop());
+        settingsStore.$patch({
+          _storedKeys: [...new Set([...settingsStore._storedKeys, ...posted])],
+        });
+      });
+      settingsStore.$patch({ _loaded: true, _storedKeys: Object.keys(initial) });
+      return post;
+    }
+
+    const postedUrls = (post: jest.Mock) => post.mock.calls.map(([url]) => url);
+
+    test('defaults to false and stays unsaved until set', async () => {
+      expect(settingsStore.supporter).toBe(false);
+      const post = fakeServer();
+      settingsStore.$patch({ theme: 'dark' });
+      await settingsStore.save();
+      expect(postedUrls(post)).not.toContain('/0/settings/supporter');
+    });
+
+    test('setting it stores it in the server settings store', async () => {
+      const post = fakeServer();
+      await settingsStore.update({ supporter: true });
+      expect(post).toHaveBeenCalledWith('/0/settings/supporter', true, expect.anything());
+      expect(settingsStore.supporter).toBe(true);
+    });
+
+    test('clearing it saves false when the server already had true', async () => {
+      const post = fakeServer({ theme: 'light', supporter: true });
+      settingsStore.$patch({ supporter: false });
+      await settingsStore.update({ supporter: false });
+      expect(post).toHaveBeenCalledWith('/0/settings/supporter', false, expect.anything());
+    });
   });
 });

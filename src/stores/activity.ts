@@ -5,7 +5,7 @@ import { map, filter, values, groupBy, sortBy, flow, reverse } from 'lodash/fp';
 import { IEvent } from '~/util/interfaces';
 
 import { window_events } from '~/util/fakedata';
-import queries, { MultiQueryParams } from '~/queries';
+import queries, { ActivityQuerySource, MultiQueryParams } from '~/queries';
 import { get_day_start_with_offset, get_offset_duration } from '~/util/time';
 import {
   TimePeriod,
@@ -19,6 +19,7 @@ import {
 import { earliestEventInBuckets } from '~/util/earliestEvent';
 
 import { useSettingsStore } from '~/stores/settings';
+import { activeHistoryCacheKey, selectPeriodsToQuery } from '~/util/activeHistory';
 import { useBucketsStore } from '~/stores/buckets';
 import { useCategoryStore } from '~/stores/categories';
 
@@ -26,6 +27,8 @@ import { getClient } from '~/util/awclient';
 import {
   buildMultideviceHostParams,
   eligibleMultideviceHosts,
+  hostDurationBreakdown,
+  HostDuration,
   isMultiHostSelection,
   parseHostParam,
   resolveHostSelection,
@@ -39,8 +42,20 @@ import {
   periodsForFullDesktopQuery,
 } from '~/util/desktopQuerySplit';
 
+// The history request started by ensure_category_history, shared so that
+// switching views back and forth doesn't repeat it.
+let historyRequest: { query_options: QueryOptions; promise: Promise<void> } | null = null;
+
 function timeperiodStrsAroundTimeperiod(timeperiod: TimePeriod): string[] {
   return timeperiodsAroundTimeperiod(timeperiod).map(timeperiodToStr);
+}
+
+function activeHistorySources(state: State): ActivityQuerySource[] {
+  return state.buckets.afk.slice(0, 1).map(bid_afk => ({
+    bid_afk,
+    bid_window: state.buckets.window[0],
+    bid_browsers: state.buckets.browser,
+  }));
 }
 
 function colorCategories(events: IEvent[]): IEvent[] {
@@ -163,23 +178,6 @@ export function applyScreentimeNames(events: IEvent[], bundleIdToName: Record<st
   });
 }
 
-/**
- * Periods around `timeperiod` whose active history still needs querying:
- * not started yet periods are skipped, cached ones are reused, except the
- * period containing now, which is still growing.
- */
-export function uncachedHistoryPeriods(
-  periods: string[],
-  cachedHistory: Record<string, unknown>,
-  now: Date = new Date()
-): string[] {
-  return periods.filter(tp_str => {
-    const [start, end] = tp_str.split('/').map(t => new Date(t));
-    if (start >= now) return false;
-    return !_.has(cachedHistory, tp_str) || end > now;
-  });
-}
-
 // Max days per request for queries returning one aggregate for the whole
 // period (editor, Android). Only long periods (e.g. All time) get split.
 const EDITOR_MAX_DAYS_PER_REQUEST = 366;
@@ -229,11 +227,18 @@ export interface QueryOptions {
   filter_afk?: boolean;
   include_audible?: boolean;
   include_stopwatch?: boolean;
+  // Load the per-period category history (the timeline barchart). It is the
+  // slowest part of a load, so views that don't show it can skip it.
+  include_category_history?: boolean;
   filter_categories?: string[][];
   dont_query_inactive?: boolean;
   // Skip the active-time history around the period (the period-usage bars),
   // e.g. for custom ranges and All time where neighbouring periods aren't shown.
   skip_active_history?: boolean;
+  // The period is All time: visualizations that query a bucket outside the
+  // host's standard buckets (Top Bucket Data) widen their start to that
+  // bucket's own earliest event, since `timeperiod` only covers the standard ones.
+  all_time?: boolean;
   force?: boolean;
   always_active_pattern?: string;
 }
@@ -245,6 +250,11 @@ interface State {
     available: boolean;
     top_apps: IEvent[];
     top_titles: IEvent[];
+    // Unfiltered window-bucket activity (see queries.ts). Zero when no events
+    // exist for the period, whatever the AFK/category filters did.
+    raw_duration: number;
+    // Multidevice only: active time credited to each selected device.
+    host_durations: HostDuration[];
   };
 
   browser: {
@@ -276,8 +286,12 @@ interface State {
     events: IEvent[];
     // Aggregated events for current and past periods
     history: Record<any, IEvent[]>;
-    // The devices/buckets the cached history was computed from
-    history_key?: string;
+    // Identity of the context `history` was fetched for. Cached periods are
+    // only reusable while this matches; see util/activeHistory.
+    history_key: string | null;
+    // Bumped whenever the cache is invalidated, so a response that was already
+    // in flight for the previous context cannot populate the new one.
+    history_generation: number;
   };
 
   android: {
@@ -323,6 +337,8 @@ export const useActivityStore = defineStore('activity', {
       available: false,
       top_apps: [],
       top_titles: [],
+      raw_duration: 0,
+      host_durations: [],
     },
 
     browser: {
@@ -354,7 +370,8 @@ export const useActivityStore = defineStore('activity', {
       events: [],
       // Aggregated events for current and past periods
       history: {},
-      history_key: undefined,
+      history_key: null,
+      history_generation: 0,
     },
 
     android: {
@@ -387,17 +404,11 @@ export const useActivityStore = defineStore('activity', {
 
   getters: {
     getActiveHistoryAroundTimeperiod(this: State) {
-      return (timeperiod: TimePeriod): IEvent[][] => {
-        const periods = timeperiodStrsAroundTimeperiod(timeperiod);
-        const _history = periods.map(tp => {
-          if (_.has(this.active.history, tp)) {
-            return this.active.history[tp];
-          } else {
-            // A zero-duration placeholder until new data has been fetched
-            return [{ timestamp: moment(tp.split('/')[0]).format(), duration: 0, data: {} }];
-          }
-        });
-        return _history;
+      return (timeperiod: TimePeriod) => {
+        return timeperiodsAroundTimeperiod(timeperiod).map(period => ({
+          period,
+          events: this.active.history[timeperiodToStr(period)] || [],
+        }));
       };
     },
     uncategorizedDuration(this: State): [number, number] | null {
@@ -466,7 +477,6 @@ export const useActivityStore = defineStore('activity', {
       this.query_hosts = [query_options.host];
 
       await this.get_buckets(query_options);
-      this.set_history_key();
 
       // TODO: These queries can actually run in parallel, but since server won't process them in parallel anyway we won't.
       this.set_available();
@@ -474,11 +484,9 @@ export const useActivityStore = defineStore('activity', {
       if (this.window.available) {
         await this.query_desktop_full(query_options);
       } else if (this.android.available) {
+        // Browser enrichment (when aw-watcher-web is present) is handled
+        // inside query_android via androidBrowserQuery.
         await this.query_android(query_options);
-        // Android hosts may also have browser buckets from aw-watcher-web.
-        if (this.browser.available) {
-          await this.query_browser_only(query_options);
-        }
       } else if (this.browser.available) {
         // Browser-only mode: device with aw-watcher-web but no window/afk/android watcher.
         await this.query_browser_only(query_options);
@@ -500,6 +508,9 @@ export const useActivityStore = defineStore('activity', {
         await this.query_active_history_android(query_options);
       } else {
         console.log('Cannot call query_active_history as we do not have an afk bucket');
+        // No query will run to invalidate the previous host's cache. Also
+        // reject any response still arriving for that previous host.
+        this.invalidate_active_history({ cache_key: null, force: true });
         await this.query_active_history_completed();
       }
 
@@ -511,11 +522,49 @@ export const useActivityStore = defineStore('activity', {
       }
 
       // Perform this last, as it takes the longest.
-      // Skipped when query_desktop_full already derived it (long ranges and Year).
-      const derivedByPeriod = this.window.available && usesMonthlyBuckets(query_options.timeperiod);
-      if ((this.window.available || this.android.available) && !derivedByPeriod) {
+      if (
+        query_options.include_category_history !== false &&
+        this.queries_category_history(query_options)
+      ) {
         await this.query_category_time_by_period(query_options);
       }
+    },
+
+    // Whether category.by_period is queried separately. Long ranges (and Year)
+    // derive it from the chunk results of the full query instead.
+    queries_category_history(query_options: QueryOptions): boolean {
+      const monthly = usesMonthlyBuckets(query_options.timeperiod);
+      if (this.query_hosts.length > 1 || this.window.available) return !monthly;
+      return this.android.available;
+    },
+
+    // Load category history for the current query if a load skipped it,
+    // e.g. when switching to a view that shows the timeline barchart.
+    async ensure_category_history() {
+      const query_options = this.query_options;
+      if (
+        !query_options?.timeperiod ||
+        this.category.by_period ||
+        !this.queries_category_history(query_options)
+      ) {
+        return;
+      }
+      if (historyRequest?.query_options === query_options) {
+        return historyRequest.promise;
+      }
+      const promise = (async () => {
+        try {
+          await this.query_category_time_by_period(query_options);
+        } finally {
+          // Not part of a load, so ensure_loaded won't clear the progress bar.
+          if (this.query_options === query_options) {
+            this.progress = null;
+          }
+          if (historyRequest?.promise === promise) historyRequest = null;
+        }
+      })();
+      historyRequest = { query_options, promise };
+      return promise;
     },
 
     /**
@@ -544,7 +593,6 @@ export const useActivityStore = defineStore('activity', {
       console.info('Querying multiple devices: ', hosts);
       this.query_hosts = hosts;
       this.get_buckets_multidevice(hosts);
-      this.set_history_key();
 
       // The multidevice query supports window/app, category and active-time
       // data. Browser (and audible-as-active) and stopwatch data are
@@ -576,7 +624,10 @@ export const useActivityStore = defineStore('activity', {
         await this.query_editor_completed();
       }
       // Long ranges derive it from the chunk results in query_multidevice_full
-      if (!usesMonthlyBuckets(query_options.timeperiod)) {
+      if (
+        query_options.include_category_history !== false &&
+        this.queries_category_history(query_options)
+      ) {
         await this.query_category_time_by_period(query_options);
       }
     },
@@ -651,6 +702,7 @@ export const useActivityStore = defineStore('activity', {
         if (!(result && result[0])) {
           // Don't show partial totals as if they covered the whole period
           this.query_window_completed();
+          this.query_browser_completed({ domains: [], urls: [], titles: [], duration: 0 });
           return;
         }
         chunks.push(result[0]);
@@ -692,9 +744,51 @@ export const useActivityStore = defineStore('activity', {
       }
 
       this.query_window_completed(data[0]);
+
+      // Blend browser URL data when aw-watcher-web buckets are also present.
+      // androidBrowserQuery intersects URL events with the periods when a
+      // browser app was in the foreground, mirroring fullDesktopQuery's
+      // window+browser blending on desktop.
+      if (this.browser.available) {
+        // ScreenTime imports don't provide a reliable browser foreground
+        // timeline. Preserve their existing browser-only behavior.
+        if (isIos) {
+          await this.query_browser_only({ timeperiod });
+          return;
+        }
+        const bq = queries.androidBrowserQuery(
+          selectedBucket,
+          this.buckets.browser,
+          categoryStore.classes_for_query,
+          filter_categories,
+          isIos
+        );
+        // Chunk like the app query above: a single request covering the whole
+        // timeperiod floods the Android and web buckets and can exceed the
+        // server's request timeout on long ranges (All time). Merge the
+        // per-chunk browser results with the same helper the desktop path uses.
+        this.progress_add(periods.length);
+        const bChunks = [];
+        for (const period of periods) {
+          const bResult = await getClient()
+            .query([period], bq, { name: 'androidBrowserQuery' })
+            .catch(this.errorHandler);
+          this.progress_tick();
+          if (!(bResult && bResult[0] && bResult[0].browser)) {
+            // Don't show partial browser totals as if they covered the whole period
+            this.query_browser_completed();
+            return;
+          }
+          bChunks.push(bResult[0]);
+        }
+        // Apply the display limit only after merging every chunk's aggregates;
+        // a site below the cutoff in each chunk can still lead overall.
+        const bMerged = mergeFullDesktopResults(bChunks);
+        this.query_browser_completed(bMerged.browser);
+      }
     },
 
-    async query_browser_only({ timeperiod }: QueryOptions) {
+    async query_browser_only({ timeperiod }: Pick<QueryOptions, 'timeperiod'>) {
       const q = queries.browserOnlyQuery(this.buckets.browser);
       this.progress_add(1);
       const result = await getClient()
@@ -724,7 +818,12 @@ export const useActivityStore = defineStore('activity', {
       const { merged, chunks } = await queryDesktopPeriods(periods, q, 'multidevice', () =>
         this.progress_tick()
       );
-      const windowResult = merged.window || {};
+      const windowResult: Record<string, any> = merged.window || {};
+      windowResult.host_durations = hostDurationBreakdown(
+        params.hosts,
+        windowResult.host_cumulative_durations,
+        windowResult.host_raw_durations
+      );
       if (usesMonthlyBuckets(query_options.timeperiod)) {
         // As in query_desktop_full: long ranges don't keep years of active
         // events in state, and build the monthly barchart from the chunks.
@@ -896,36 +995,53 @@ export const useActivityStore = defineStore('activity', {
       return { date, approximate: false };
     },
 
-    async query_active_history({ timeperiod }: QueryOptions) {
-      const afk_buckets = [this.buckets.afk[0]];
+    async query_active_history({ timeperiod, ...query_options }: QueryOptions) {
+      const settingsStore = useSettingsStore();
+      const sources = activeHistorySources(this);
 
-      // Our fix: the history cache is keyed by period only; if the underlying
-      // bucket set changed (host switch), stale values from the old bucket set
-      // would keep showing. Drop them and refetch.
-      const bucket_sig = JSON.stringify(afk_buckets);
-      if ((this.active as any)._bucket_sig !== bucket_sig) {
-        (this.active as any)._bucket_sig = bucket_sig;
-        this.active.history = {};
-      }
+      // Drop anything fetched for a different question before deciding what is
+      // still missing, so incompatible periods can never be reused.
+      const generation = this.invalidate_active_history({
+        cache_key: activeHistoryCacheKey(
+          {
+            platform: 'desktop',
+            host: query_options.host,
+            useMultidevice: false,
+            startOfDay: settingsStore.startOfDay,
+            filter_afk: query_options.filter_afk,
+            include_audible: query_options.include_audible,
+            always_active_pattern: query_options.always_active_pattern,
+          },
+          sources
+        ),
+        force: query_options.force,
+      });
 
-      // Filter out periods that are already in the history, and that are in the future
-      const periods = uncachedHistoryPeriods(
+      const periods = selectPeriodsToQuery(
         timeperiodStrsAroundTimeperiod(timeperiod),
         this.active.history
       );
-      const query = queries.activityQuery(afk_buckets);
+      // Nothing missing: no request at all.
+      if (periods.length === 0) return;
+
+      const query = queries.activeDurationQuery(sources, query_options);
       const client = getClient();
       const signal = client.controller.signal;
       const data: IEvent[][] = [];
       const chunks = chunkPeriodsBySpan(periods);
       this.progress_add(chunks.length);
       for (const chunk of chunks) {
+        if (this.active.history_generation !== generation) return;
         if (signal.aborted) {
           throw signal['reason'] || 'unknown reason';
         }
         data.push(...(await client.query(chunk, query, { name: 'activityQuery', verbose: true })));
         this.progress_tick();
       }
+
+      // The context moved on while this was in flight (host switch, settings
+      // change, force reload); its result describes the old one.
+      if (this.active.history_generation !== generation) return;
 
       // Our fix: watchers that die without marking afk leave multi-day not-afk
       // marathon events; union_no_overlap doesn't reliably merge overlapping
@@ -939,7 +1055,9 @@ export const useActivityStore = defineStore('activity', {
           const ps_ms = new Date(ps).getTime();
           const pe_ms = new Date(pe).getTime();
           const spans: [number, number][] = [];
-          for (const e of _.filter(events, ev => ev.data && ev.data.status == 'not-afk')) {
+          // activeDurationQuery already filtered to active intervals
+          // server-side (no client status field to check).
+          for (const e of events) {
             if ((e.duration || 0) > MAX_EVENT_SEC) continue;
             const e_start = new Date(e.timestamp).getTime();
             const e_end = e_start + (e.duration || 0) * 1000;
@@ -999,6 +1117,7 @@ export const useActivityStore = defineStore('activity', {
       periods = periods.filter(period => new Date(period.split('/')[0]) < new Date());
       this.progress_add(periods.length);
 
+      const loading = this.query_options;
       const signal = getClient().controller.signal;
       let cancelled = false;
       signal.onabort = () => {
@@ -1079,43 +1198,50 @@ export const useActivityStore = defineStore('activity', {
       // Filter out values that are undefined (no longer needed, only used when visualization was progressive (looks buggy))
       by_period = _.fromPairs(_.toPairs(by_period).filter(o => o[1]));
 
+      // A newer load took over; drop this result.
+      if (this.query_options !== loading) return;
       this.query_category_time_by_period_completed({ by_period });
     },
 
-    async query_active_history_multidevice({ timeperiod }: QueryOptions, hosts: string[]) {
-      const bucketsStore = useBucketsStore();
-
-      // Our fix: clear the history cache when the bucket set changes (host
-      // selection toggled), so stale bars don't persist through refreshes.
-      const { host_params } = buildMultideviceHostParams(
-        hosts,
-        host => bucketsStore.bucketsWindow(host),
-        host => bucketsStore.bucketsAFK(host),
-        host => bucketsStore.bucketsAndroid(host)
-      );
-      const afk_buckets: string[] = [];
-      const android_buckets: string[] = [];
-      _.values(host_params).forEach(p => {
-        if ('bid_afk' in p) afk_buckets.push(p.bid_afk);
-        else android_buckets.push(p.bid_android);
+    async query_active_history_multidevice(
+      { timeperiod, ...query_options }: QueryOptions,
+      hosts: string[]
+    ) {
+      const settingsStore = useSettingsStore();
+      const { host_params, hosts: resolvedHosts } = this.multidevice_params(query_options, hosts);
+      const sources: ActivityQuerySource[] = resolvedHosts.map(host => host_params[host]);
+      const generation = this.invalidate_active_history({
+        cache_key: activeHistoryCacheKey(
+          {
+            platform: 'multidevice',
+            host: JSON.stringify(resolvedHosts),
+            useMultidevice: true,
+            startOfDay: settingsStore.startOfDay,
+            filter_afk: query_options.filter_afk,
+            always_active_pattern: query_options.always_active_pattern,
+          },
+          sources
+        ),
+        force: query_options.force,
       });
-      const bucket_sig = JSON.stringify([afk_buckets, android_buckets]);
-      if ((this.active as any)._bucket_sig !== bucket_sig) {
-        (this.active as any)._bucket_sig = bucket_sig;
-        this.active.history = {};
-      }
-
-      const periods = uncachedHistoryPeriods(
+      const periods = selectPeriodsToQuery(
         timeperiodStrsAroundTimeperiod(timeperiod),
         this.active.history
       );
-      const query = queries.multideviceActivityQuery(afk_buckets, android_buckets);
+      if (periods.length === 0) return;
+
+      // Browser/audible evidence is unavailable in the multidevice view.
+      const query = queries.activeDurationQuery(sources, {
+        filter_afk: query_options.filter_afk,
+        always_active_pattern: query_options.always_active_pattern,
+      });
       const client = getClient();
       const signal = client.controller.signal;
-      const data: number[] = [];
+      const data: IEvent[][] = [];
       const chunks = chunkPeriodsBySpan(periods);
       this.progress_add(chunks.length);
       for (const chunk of chunks) {
+        if (this.active.history_generation !== generation) return;
         if (signal.aborted) {
           throw signal['reason'] || 'unknown reason';
         }
@@ -1125,17 +1251,51 @@ export const useActivityStore = defineStore('activity', {
         this.progress_tick();
       }
 
-      // Our fix: cap each period's total at the period's own length so
-      // dead-watcher marathons can't produce impossible day bars.
+      // The context moved on while this was in flight (host switch, settings
+      // change, force reload); its result describes the old one.
+      if (this.active.history_generation !== generation) return;
+
+      // Our fix: watchers that die without marking afk leave multi-day not-afk
+      // marathon events; union_no_overlap doesn't reliably merge overlapping
+      // synced-bucket variants. Sanitize per event: drop >24h, clip to the
+      // period, fold into ONE not-afk event capped at the period length.
+      const MAX_EVENT_SEC = 24 * 3600;
       const active_history = _.zipObject(
         periods,
-        _.map(data, (duration: number, i: number): IEvent[] => {
+        _.map(data, (events, i) => {
           const [ps, pe] = periods[i].split('/');
-          const period_sec = (new Date(pe).getTime() - new Date(ps).getTime()) / 1000;
+          const ps_ms = new Date(ps).getTime();
+          const pe_ms = new Date(pe).getTime();
+          const spans: [number, number][] = [];
+          // activeDurationQuery already filtered to active intervals
+          // server-side (no client status field to check).
+          for (const e of events) {
+            if ((e.duration || 0) > MAX_EVENT_SEC) continue;
+            const e_start = new Date(e.timestamp).getTime();
+            const e_end = e_start + (e.duration || 0) * 1000;
+            const s = Math.max(e_start, ps_ms);
+            const t = Math.min(e_end, pe_ms);
+            if (t > s) spans.push([s, t]);
+          }
+          spans.sort((a, b) => a[0] - b[0]);
+          let union_ms = 0;
+          let cur_s: number | null = null;
+          let cur_t = 0;
+          for (const [s, t] of spans) {
+            if (cur_s === null || s > cur_t) {
+              if (cur_s !== null) union_ms += cur_t - cur_s;
+              cur_s = s;
+              cur_t = t;
+            } else {
+              cur_t = Math.max(cur_t, t);
+            }
+          }
+          if (cur_s !== null) union_ms += cur_t - cur_s;
+          const period_sec = (pe_ms - ps_ms) / 1000;
           return [
             {
               timestamp: ps,
-              duration: Math.min(duration, period_sec),
+              duration: Math.min(union_ms / 1000, period_sec),
               data: { status: 'not-afk' },
             },
           ];
@@ -1144,19 +1304,38 @@ export const useActivityStore = defineStore('activity', {
       this.query_active_history_completed({ active_history });
     },
 
-    async query_active_history_android({ timeperiod }: QueryOptions) {
-      const periods = uncachedHistoryPeriods(
-        timeperiodStrsAroundTimeperiod(timeperiod),
-        this.active.history
-      );
+    async query_active_history_android({ timeperiod, ...query_options }: QueryOptions) {
+      const settingsStore = useSettingsStore();
       // Prefer ScreenTime bucket over Android watcher for consistency with query_android
       const iosOrAndroidBucket =
         this.buckets.android.find((id: string) => id.startsWith('aw-import-screentime')) ||
         this.buckets.android[0];
+
+      const generation = this.invalidate_active_history({
+        cache_key: activeHistoryCacheKey(
+          {
+            platform: 'android',
+            host: query_options.host,
+            useMultidevice: false,
+            startOfDay: settingsStore.startOfDay,
+          },
+          [iosOrAndroidBucket]
+        ),
+        force: query_options.force,
+      });
+
+      // Same freshness policy as desktop, including skipping future periods.
+      const periods = selectPeriodsToQuery(
+        timeperiodStrsAroundTimeperiod(timeperiod),
+        this.active.history
+      );
+      if (periods.length === 0) return;
+
       const data = await getClient().query(
         periods,
         queries.activityQueryAndroid(iosOrAndroidBucket)
       );
+      if (this.active.history_generation !== generation) return;
       const active_history = _.zipObject(periods, data);
       const active_history_events = _.mapValues(
         active_history,
@@ -1226,6 +1405,7 @@ export const useActivityStore = defineStore('activity', {
 
       this.query_window_completed({
         duration: _.sumBy(window_events, 'duration'),
+        raw_duration: _.sumBy(window_events, 'duration'),
         app_events,
         title_events,
         cat_events,
@@ -1287,6 +1467,7 @@ export const useActivityStore = defineStore('activity', {
       // Resets the store state while waiting for new query to finish
       this.window.top_apps = null;
       this.window.top_titles = null;
+      this.window.host_durations = [];
 
       this.browser.duration = 0;
       this.browser.top_domains = null;
@@ -1304,20 +1485,9 @@ export const useActivityStore = defineStore('activity', {
       this.active.duration = null;
       this.progress = null;
 
-      // The active history is cached across date changes (see
-      // query_active_history*), and invalidated in set_history_key when
-      // the queried devices or buckets change.
-    },
-
-    // Clear the cached active history if it was computed from other
-    // devices/buckets: another host, a changed selection, or a new device
-    // showing up under "all devices".
-    set_history_key(this: State) {
-      const key = JSON.stringify([this.query_hosts, this.buckets.afk, this.buckets.android]);
-      if (this.active.history_key !== key) {
-        this.active.history = {};
-        this.active.history_key = key;
-      }
+      // active.history is deliberately preserved here so navigating dates
+      // reuses periods already fetched for the same context. Clearing it is
+      // decided by cache identity instead, in invalidate_active_history.
     },
 
     query_window_completed(
@@ -1328,6 +1498,7 @@ export const useActivityStore = defineStore('activity', {
         cat_events: [],
         active_events: [],
         duration: 0,
+        raw_duration: 0,
       }
     ) {
       // Set $color and $score for categories
@@ -1338,6 +1509,8 @@ export const useActivityStore = defineStore('activity', {
 
       this.window.top_apps = withDominantCategory(data.app_events, data.app_cat_events);
       this.window.top_titles = data.title_events;
+      this.window.raw_duration = data.raw_duration || 0;
+      this.window.host_durations = data.host_durations || [];
       this.category.top = data.cat_events;
       this.active.duration = data.duration;
       this.active.events = data.active_events;
@@ -1379,6 +1552,18 @@ export const useActivityStore = defineStore('activity', {
       if (this.progress !== null) {
         this.progress = { ...this.progress, done: this.progress.done + 1 };
       }
+    },
+
+    // Clears cached periods when they belong to a different question, or when
+    // the user explicitly asked for fresh data. Returns the generation that a
+    // response must still match to be accepted.
+    invalidate_active_history(this: State, { cache_key, force = false }) {
+      if (force || this.active.history_key !== cache_key) {
+        this.active.history = {};
+        this.active.history_key = cache_key;
+        this.active.history_generation += 1;
+      }
+      return this.active.history_generation;
     },
 
     query_active_history_completed(this: State, { active_history } = { active_history: {} }) {

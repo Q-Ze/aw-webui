@@ -1,0 +1,200 @@
+import QueryExplorerComponent from '~/views/QueryExplorer.vue';
+import { buildSavedQuery } from '~/util/savedQueries';
+
+const saveQueryDraft = () =>
+  buildSavedQuery({
+    id: '',
+    name: '',
+    query_code: 'RETURN = [];',
+    startdate: '2026-05-20',
+    enddate: '2026-05-21',
+    event_type: 'currentwindow',
+  });
+
+// Tests call Options API members directly, which the Vue constructor type doesn't expose.
+const QueryExplorer: any = QueryExplorerComponent;
+
+describe('QueryExplorer saveCurrentQuery', () => {
+  test('canceling an overwrite confirm aborts without opening the save-as-new prompt', async () => {
+    const msgBoxConfirm = jest.fn().mockResolvedValue(false);
+    const persistSavedQueries = jest.fn();
+    const vm = {
+      $bvModal: { msgBoxConfirm },
+      enddate: '2026-05-21',
+      event_type: 'currentwindow',
+      persistSavedQueries,
+      query_code: 'RETURN = [];',
+      savedQueries: [
+        {
+          id: 'daily-coding-time',
+          name: 'Daily Coding Time',
+          query_code: 'RETURN = [];',
+          start_day_offset: 0,
+          end_day_offset: -1,
+          event_type: 'currentwindow',
+        },
+      ],
+      selectedSavedQuery: {
+        id: 'daily-coding-time',
+        name: 'Daily Coding Time',
+        query_code: 'RETURN = [];',
+        start_day_offset: 0,
+        end_day_offset: -1,
+        event_type: 'currentwindow',
+      },
+      selected_saved_query_id: 'daily-coding-time',
+      startdate: '2026-05-20',
+    };
+
+    await QueryExplorer.methods.saveCurrentQuery.call(vm);
+
+    expect(msgBoxConfirm).toHaveBeenCalledWith(
+      'Update saved query "Daily Coding Time"?',
+      expect.objectContaining({ title: 'Update Query' })
+    );
+    expect(persistSavedQueries).not.toHaveBeenCalled();
+  });
+
+  test('keeps save modal open when the query name is blank', async () => {
+    const event = { preventDefault: jest.fn() };
+    const vm = {
+      saveQueryName: '   ',
+      saved_query_error: '',
+    };
+
+    await QueryExplorer.methods.onSaveQueryConfirm.call(vm, event);
+
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(vm.saved_query_error).toBe('Saved query name cannot be empty.');
+  });
+
+  test('cancels save modal closure before awaiting persistence failure', async () => {
+    const event = { preventDefault: jest.fn() };
+    let resolvePersistence;
+    const persistence = new Promise(resolve => {
+      resolvePersistence = resolve;
+    });
+    const vm = {
+      enddate: '2026-05-21',
+      event_type: 'currentwindow',
+      persistSavedQueries: jest.fn().mockReturnValue(persistence),
+      query_code: 'RETURN = [];',
+      saveQueryName: 'Daily Coding Time',
+      saveQueryDraft: saveQueryDraft(),
+      savedQueries: [],
+      selected_saved_query_id: '',
+      showSaveQueryModal: true,
+      startdate: '2026-05-20',
+    };
+
+    const confirmation = QueryExplorer.methods.onSaveQueryConfirm.call(vm, event);
+
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(vm.showSaveQueryModal).toBe(true);
+
+    resolvePersistence(false);
+    await confirmation;
+
+    expect(vm.selected_saved_query_id).toBe('');
+    expect(vm.showSaveQueryModal).toBe(true);
+  });
+
+  test('closes save modal after persistence succeeds', async () => {
+    const event = { preventDefault: jest.fn() };
+    const vm = {
+      enddate: '2026-05-21',
+      event_type: 'currentwindow',
+      persistSavedQueries: jest.fn().mockResolvedValue(true),
+      query_code: 'RETURN = [];',
+      saveQueryName: 'Daily Coding Time',
+      saveQueryDraft: saveQueryDraft(),
+      savedQueries: [],
+      selected_saved_query_id: '',
+      showSaveQueryModal: true,
+      startdate: '2026-05-20',
+    };
+
+    await QueryExplorer.methods.onSaveQueryConfirm.call(vm, event);
+
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(vm.selected_saved_query_id).not.toBe('');
+    expect(vm.showSaveQueryModal).toBe(false);
+  });
+
+  test('keeps rename modal open when the query name is blank', async () => {
+    const event = { preventDefault: jest.fn() };
+    const vm = {
+      renameQueryName: '   ',
+      saved_query_error: '',
+      selectedSavedQuery: { id: 'daily-coding-time', name: 'Daily Coding Time' },
+    };
+
+    await QueryExplorer.methods.onRenameQueryConfirm.call(vm, event);
+
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(vm.saved_query_error).toBe('Saved query name cannot be empty.');
+  });
+
+  test('cancels rename modal closure before awaiting persistence failure', async () => {
+    const event = { preventDefault: jest.fn() };
+    let resolvePersistence;
+    const persistence = new Promise(resolve => {
+      resolvePersistence = resolve;
+    });
+    const selectedSavedQuery = { id: 'daily-coding-time', name: 'Daily Coding Time' };
+    const vm = {
+      persistSavedQueries: jest.fn().mockReturnValue(persistence),
+      renameQueryName: 'Coding Time',
+      renameQueryTarget: { ...selectedSavedQuery },
+      savedQueries: [selectedSavedQuery],
+      selectedSavedQuery,
+      showRenameQueryModal: true,
+    };
+
+    const confirmation = QueryExplorer.methods.onRenameQueryConfirm.call(vm, event);
+
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(vm.showRenameQueryModal).toBe(true);
+
+    resolvePersistence(false);
+    await confirmation;
+
+    expect(vm.showRenameQueryModal).toBe(true);
+  });
+
+  test('closes rename modal after persistence succeeds', async () => {
+    const event = { preventDefault: jest.fn() };
+    const selectedSavedQuery = { id: 'daily-coding-time', name: 'Daily Coding Time' };
+    const vm = {
+      persistSavedQueries: jest.fn().mockResolvedValue(true),
+      renameQueryName: 'Coding Time',
+      renameQueryTarget: { ...selectedSavedQuery },
+      savedQueries: [selectedSavedQuery],
+      selectedSavedQuery,
+      showRenameQueryModal: true,
+    };
+
+    await QueryExplorer.methods.onRenameQueryConfirm.call(vm, event);
+
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(vm.showRenameQueryModal).toBe(false);
+  });
+});
+
+describe('QueryExplorer eventcount_str', () => {
+  const event = { timestamp: '2026-10-31T12:00:00Z', duration: 10, data: { title: 'Code' } };
+
+  test('counts ordinary and empty event arrays', () => {
+    expect(QueryExplorer.computed.eventcount_str.call({ events: [event] })).toBe(
+      'Number of events: 1'
+    );
+    expect(QueryExplorer.computed.eventcount_str.call({ events: [] })).toBe('Number of events: 0');
+  });
+
+  test.each([[42], [{ total: 42 }], [null], [[1, 2]], [[{ duration: 5, label: 'total' }]]])(
+    'does not label non-event result %p as events',
+    value => {
+      expect(QueryExplorer.computed.eventcount_str.call({ events: value })).toBe('');
+    }
+  );
+});

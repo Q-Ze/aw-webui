@@ -2,40 +2,40 @@
 div
   b-row
     b-col(cols="12", md="6").mb-2
-      b-form-group(label="Bucket")
+      b-form-group(:label="$t('ui.topBucket.bucket')")
         b-form-select(
           v-model="selectedBucketId",
           :options="bucketOptions",
-          :disabled="bucketOptions.length === 0 || loading"
+          :disabled="disabled || bucketOptions.length === 0 || loading"
         )
     b-col(cols="12", md="6").mb-2
       b-form-group
-        template(#label)
-          span Field in event data
+        template(#label="")
+          span {{ $t('ui.topBucket.field') }}
           span.info-icon(
-            title="Field names come from event data. Dot notation is supported (e.g., data.title)."
+            :title="$t('ui.topBucket.fieldHelp')"
           ) i
         b-form-select(
           v-model="selectedField",
           :options="fieldSelectOptions",
-          :disabled="!selectedBucketId || loading"
+          :disabled="disabled || !selectedBucketId || loading"
         )
         b-form-input.mt-2(
           v-if="selectedField === '__custom' || fieldOptions.length === 0",
           v-model="customField",
-          placeholder="e.g. data.title",
-          :disabled="loading"
+          :placeholder="$t('ui.topBucket.fieldPlaceholder')",
+          :disabled="disabled || loading"
         )
   b-alert.mt-2(v-if="error", show, variant="danger") {{ error }}
   b-alert.mt-2(v-else-if="!selectedBucketId" show variant="info")
-    | Select a watcher to load events for this period.
+    | {{ $t('ui.topBucket.selectWatcher') }}
   b-alert.mt-2(v-else-if="!loading && aggregated.length === 0" show variant="warning")
-    | No events found for this watcher and time range.
+    | {{ $t('ui.topBucket.noEvents') }}
 
   div.mt-2
     div.text-center.py-4(v-if="loading")
-      b-spinner(small type="grow" label="Loading")
-      span.ml-2 Loading events...
+      b-spinner(small type="grow" :label="$t('common.loading')")
+      span.ml-2 {{ $t('ui.topBucket.loadingEvents') }}
     aw-summary(
       v-else-if="aggregated.length",
       :fields="aggregated",
@@ -45,12 +45,13 @@ div
       with_limit
     )
     div.text-muted.text-center.py-4(v-else)
-      | Pick a field to see results.
+      | {{ $t('ui.topBucket.pickField') }}
 </template>
 
 <script lang="ts">
 import _ from 'lodash';
 import moment from 'moment';
+import { earliestEventInBucket, rangeCoveringEarliest } from '~/util/earliestEvent';
 import { useActivityStore } from '~/stores/activity';
 import { useBucketsStore } from '~/stores/buckets';
 import { getClient } from '~/util/awclient';
@@ -64,12 +65,28 @@ function formatValue(value: unknown): string {
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }
+// Watcher values are JSON-like. Keep type and structure separate from presentation;
+// object property insertion order is not part of value identity, array order is.
+function valueIdentity(value: unknown): unknown {
+  if (value === null || value === undefined) return ['unknown'];
+  if (Array.isArray(value)) return ['array', value.map(valueIdentity)];
+  if (typeof value === 'object') {
+    return [
+      'object',
+      Object.keys(value)
+        .sort()
+        .map(key => [key, valueIdentity(value[key])]),
+    ];
+  }
+  return [typeof value, value];
+}
 export default {
   name: 'aw-top-bucket-data',
   props: {
     initialBucketId: { type: String, default: '' },
     initialField: { type: String, default: '' },
     initialCustomField: { type: String, default: '' },
+    disabled: { type: Boolean, default: false },
   },
   data() {
     return {
@@ -81,20 +98,23 @@ export default {
       fieldOptions: [] as string[],
       events: [] as any[],
       aggregated: [] as AggregatedEvent[],
+      // bucket id -> earliest event, for All time (see queryRange)
+      earliestByBucket: {} as Record<string, Date | null>,
       loading: false,
       error: '',
+      loadGeneration: 0,
     };
   },
   computed: {
     bucketOptions(): { value: string; text: string }[] {
       return this.bucketsStore.buckets.map(b => ({
         value: b.id,
-        text: `${b.id} (${b.type || 'unknown'})`,
+        text: `${b.id} (${b.type || this.$t('common.unknown')})`,
       }));
     },
     fieldSelectOptions(): { value: string; text: string }[] {
       const options = this.fieldOptions.map(f => ({ value: f, text: f }));
-      options.push({ value: '__custom', text: 'Custom field…' });
+      options.push({ value: '__custom', text: this.$t('ui.topBucket.customField') });
       return options;
     },
     selectedFieldValue(): string {
@@ -121,8 +141,19 @@ export default {
     },
   },
   watch: {
+    disabled(value) {
+      // Field discovery can finish during a save. Forward the resulting
+      // selection once the parent accepts draft updates again.
+      if (!value) this.emitSelection();
+    },
     selectedBucketId: function () {
       this.emitSelection();
+      // Drop the cached earliest for the newly selected bucket: it may have
+      // gained older events since it was last viewed (an import while the page
+      // stayed open), and a plain switch should reflect that without a Refresh.
+      const rest = { ...this.earliestByBucket };
+      delete rest[this.selectedBucketId];
+      this.earliestByBucket = rest;
       this.loadEvents();
     },
     selectedField: function () {
@@ -158,17 +189,59 @@ export default {
         this.selectedBucketId = this.bucketsStore.buckets[0].id;
       }
     },
+    // The shared range, widened for All time to the selected bucket's own
+    // earliest event: the All time start only considers the host's standard
+    // buckets, so e.g. an older imported bucket would otherwise be cut off.
+    async queryRange(
+      bucketId: string,
+      generation: number
+    ): Promise<{ start: string; end: string } | null> {
+      const range = this.timeRange;
+      const opts = this.activityStore.query_options;
+      if (!range || !opts || !opts.all_time) return range;
+      // A forced refresh must re-check the bucket's earliest event, so events
+      // imported while the page stayed open are not left out of All time.
+      if (opts.force || !(bucketId in this.earliestByBucket)) {
+        const bucket = this.bucketsStore.getBucket(bucketId);
+        // A miss (store still loading, or restored initialBucketId not in
+        // the list yet) must not poison the cache with null — Refresh would
+        // then be the only retry. Empty buckets still cache null below.
+        if (!bucket) {
+          return range;
+        }
+        const client = getClient();
+        const earliest = await earliestEventInBucket(bucket, (id, params) =>
+          client.getEvents(id, params)
+        );
+        if (generation !== this.loadGeneration) return null;
+        this.earliestByBucket = { ...this.earliestByBucket, [bucketId]: earliest };
+      }
+      return rangeCoveringEarliest(range, this.earliestByBucket[bucketId]);
+    },
     async loadEvents() {
-      if (!this.selectedBucketId || !this.timeRange) return;
-      this.loading = true;
+      // A bucket can have overlapping date/refresh requests, or be selected
+      // again after A -> B -> A. Bucket equality alone cannot identify its owner.
+      const generation = ++this.loadGeneration;
+      const bucketId = this.selectedBucketId;
       this.error = '';
       this.aggregated = [];
+      this.events = [];
+      this.fieldOptions = [];
+      if (!bucketId || !this.timeRange) {
+        this.loading = false;
+        return;
+      }
+      this.loading = true;
       try {
-        this.events = await getClient().getEvents(this.selectedBucketId, {
-          start: this.timeRange.start,
-          end: this.timeRange.end,
+        const range = await this.queryRange(bucketId, generation);
+        if (!range || generation !== this.loadGeneration) return;
+        const events = await getClient().getEvents(bucketId, {
+          start: range.start,
+          end: range.end,
           limit: -1,
         });
+        if (generation !== this.loadGeneration) return;
+        this.events = events;
         this.fieldOptions = this.extractFields(this.events);
         if (!this.selectedField && this.fieldOptions.length > 0) {
           this.selectedField = this.fieldOptions[0];
@@ -177,12 +250,15 @@ export default {
         }
         this.aggregate();
       } catch (err) {
+        // A superseded run must not clobber the results of a newer one.
+        if (generation !== this.loadGeneration) return;
         console.error(err);
         this.events = [];
         this.fieldOptions = [];
-        this.error = err?.message || 'Failed to load events for the selected watcher.';
+        this.error = err?.message || this.$t('ui.topBucket.loadError');
       } finally {
-        this.loading = false;
+        // A superseded run must not hide a newer in-flight load.
+        if (generation === this.loadGeneration) this.loading = false;
       }
     },
     extractFields(events: any[]): string[] {
@@ -206,7 +282,7 @@ export default {
       this.events.forEach(e => {
         const value = _.get(e, path);
         const display = formatValue(value);
-        const key = Array.isArray(value) ? JSON.stringify(value) : String(display);
+        const key = JSON.stringify(valueIdentity(value));
         if (!grouped.has(key)) {
           grouped.set(key, {
             duration: 0,
@@ -216,7 +292,27 @@ export default {
         const entry = grouped.get(key);
         entry.duration += e.duration || 0;
       });
-      this.aggregated = Array.from(grouped.values()).sort((a, b) => b.duration - a.duration);
+      const rows = Array.from(grouped.values());
+      const labelCounts = new Map<string, number>();
+      rows.forEach(e =>
+        labelCounts.set(e.data.display, (labelCounts.get(e.data.display) || 0) + 1)
+      );
+      // Reserve original labels so generated annotations cannot hide a literal
+      // string with that same spelling. Ordinary string names stay unchanged.
+      const usedLabels = new Set(rows.map(e => e.data.display));
+      rows.forEach(e => {
+        if (labelCounts.get(e.data.display) < 2 || typeof e.data.raw === 'string') return;
+        const raw = e.data.raw;
+        const type = raw == null ? 'unknown' : Array.isArray(raw) ? 'array' : typeof raw;
+        const text = Array.isArray(raw) ? JSON.stringify(raw) : e.data.display;
+        const base = `${text} (${type})`;
+        let label = base;
+        let suffix = 2;
+        while (usedLabels.has(label)) label = `${base} #${suffix++}`;
+        usedLabels.add(label);
+        e.data.display = label;
+      });
+      this.aggregated = rows.sort((a, b) => b.duration - a.duration);
     },
     emitSelection() {
       this.$emit('update-props', {

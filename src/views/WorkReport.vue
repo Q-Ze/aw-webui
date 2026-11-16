@@ -1,15 +1,15 @@
 <template lang="pug">
 div
-  h3.mb-3 Work Time Report
+  h3.mb-3 {{ $t('workReport.title') }}
 
   div.row.mb-4
     div.col-md-3
-      b-form-group(label="Hosts" label-class="font-weight-bold")
+      b-form-group(:label="$t('ui.workReport.hosts')" label-class="font-weight-bold")
         b-form-select(v-model="selectedHosts" :options="hostOptions" multiple :select-size="4")
-        small.text-muted Select devices to include
+        small.text-muted {{ $t('ui.workReport.selectDevices') }}
 
     div.col-md-3
-      b-form-group(label="Categories" label-class="font-weight-bold")
+      b-form-group(:label="$t('ui.workReport.categories')" label-class="font-weight-bold")
         b-form-select(
           :value="''"
           :options="addableCategoryOptions"
@@ -21,14 +21,14 @@ div
             | {{ JSON.parse(cat).join(' > ') }}
             button.ml-1.close.small(
               type="button"
-              aria-label="Remove category"
+              :aria-label="$t('ui.workReport.removeCategory')"
               style="font-size: 0.85rem; line-height: 1"
               @click="removeCategory(idx)"
             ) &times;
-        small.text-muted.d-block.mt-1 Subcategories are included automatically (e.g. "Work" also covers "Work > Programming").
+        small.text-muted.d-block.mt-1 {{ $t('ui.workReport.subcategories') }}
 
     div.col-md-3
-      b-form-group(label="Break Time" label-class="font-weight-bold")
+      b-form-group(:label="$t('ui.workReport.breakTime')" label-class="font-weight-bold")
         div.d-flex.align-items-center
           b-form-input(
             v-model="breakTime"
@@ -38,37 +38,37 @@ div
             step="1"
           )
           span.ml-2.text-nowrap {{ breakTime }} min
-        small.text-muted Gaps shorter than this will be counted as work time
+        small.text-muted {{ $t('ui.workReport.breakHelp') }}
 
     div.col-md-3
-      b-form-group(label="Date Range" label-class="font-weight-bold")
+      b-form-group(:label="$t('ui.workReport.dateRange')" label-class="font-weight-bold")
         b-form-select(v-model="dateRange" :options="dateRangeOptions")
 
   div.mb-3.report-actions
     b-button(@click="loadData" variant="primary")
       icon(name="sync")
-      |  Calculate Work Time
+      |  {{ $t('ui.workReport.calculate') }}
     b-button(@click="exportCSV" variant="outline-secondary" :disabled="!hasData")
       icon(name="download")
-      |  Export CSV
+      |  {{ $t('ui.workReport.exportCsv') }}
     b-button(@click="exportJSON" variant="outline-secondary" :disabled="!hasData")
       icon(name="download")
-      |  Export JSON
+      |  {{ $t('common.export') }} JSON
 
   div(v-if="loading")
     b-spinner.mr-2
-    | Loading...
+    | {{ $t('workReport.loading') }}
 
   div(v-if="hasData && !loading")
-    h5.mt-4 Daily Breakdown
+    h5.mt-4 {{ $t('ui.workReport.dailyBreakdown') }}
 
     table.table.table-sm.table-hover
       thead
         tr
-          th Date
-          th.text-right Work Time
-          th.text-right Sessions
-          th.text-right Avg Session
+          th {{ $t('ui.workReport.date') }}
+          th.text-right {{ $t('ui.workReport.workTime') }}
+          th.text-right {{ $t('ui.workReport.sessions') }}
+          th.text-right {{ $t('ui.workReport.avgSession') }}
       tbody
         tr(v-for="day in dailyData" :key="day.date")
           td.text-nowrap {{ day.date }}
@@ -77,7 +77,7 @@ div
           td.text-right {{ formatDuration(day.avgSession) }}
       tfoot
         tr.font-weight-bold
-          td Total
+          td {{ $t('ui.billing.total') }}
           td.text-right {{ formatDuration(totalDuration) }}
           td.text-right {{ totalSessions }}
           td.text-right {{ formatDuration(avgSessionLength) }}
@@ -90,7 +90,12 @@ import { getClient } from '~/util/awclient';
 import { useCategoryStore } from '~/stores/categories';
 import { useSettingsStore } from '~/stores/settings';
 import { useBucketsStore } from '~/stores/buckets';
-import { get_day_start_with_offset, get_day_end_with_offset } from '~/util/time';
+import {
+  get_day_start_with_offset,
+  get_day_end_with_offset,
+  get_today_with_offset,
+} from '~/util/time';
+import { periodStartDate } from '~/util/timeperiod';
 import {
   getSupportedWorkReportHosts,
   getWorkReportHostBuckets,
@@ -102,6 +107,15 @@ import {
 
 import 'vue-awesome/icons/sync';
 import 'vue-awesome/icons/download';
+
+interface CalculationParameters {
+  categories: string[];
+  breakTime: number;
+  dateRange: string;
+  hosts: string[];
+  timeperiods: string[];
+  expandedCategories: string[][];
+}
 
 interface DailyData {
   date: string;
@@ -127,6 +141,7 @@ export default {
       loading: false,
       dailyData: [] as DailyData[],
       rawData: {} as Record<string, any>,
+      calculationParameters: null as CalculationParameters | null,
     };
   },
   computed: {
@@ -150,7 +165,10 @@ export default {
       return [
         {
           value: '',
-          text: this.selectedCategories.length === 0 ? 'Select category…' : 'Add category…',
+          text:
+            this.selectedCategories.length === 0
+              ? this.$t('ui.workReport.selectCategory')
+              : this.$t('ui.workReport.addCategory'),
           disabled: true,
         },
         ...this.categoryOptions.filter(opt => !isCoveredBySelected(JSON.parse(opt.value))),
@@ -158,10 +176,10 @@ export default {
     },
     dateRangeOptions() {
       return [
-        { value: 'last7d', text: 'Last 7 days' },
-        { value: 'last30d', text: 'Last 30 days' },
-        { value: 'thisWeek', text: 'This week' },
-        { value: 'thisMonth', text: 'This month' },
+        { value: 'last7d', text: this.$t('common.last7d') },
+        { value: 'last30d', text: this.$t('common.last30d') },
+        { value: 'thisWeek', text: this.$t('common.thisWeek') },
+        { value: 'thisMonth', text: this.$t('common.thisMonth') },
       ];
     },
     hasData() {
@@ -187,18 +205,19 @@ export default {
   },
   methods: {
     async loadData() {
+      if (this.loading) return;
       this.loading = true;
       try {
         const client = getClient();
 
         if (this.selectedHosts.length === 0) {
-          alert('Please select at least one host');
+          alert(this.$t('common.selectHost'));
           this.loading = false;
           return;
         }
 
         if (this.selectedCategories.length === 0) {
-          alert('Please select at least one category');
+          alert(this.$t('extraViews.workReport.selectCategoryError'));
           this.loading = false;
           return;
         }
@@ -214,18 +233,19 @@ export default {
           );
           if (supportedHosts.length === 0) {
             alert(
-              `The selected hosts are missing aw-watcher-afk buckets and can't be included in Work Report: ${unsupportedHosts.join(
-                ', '
-              )}`
+              this.$t('ui.workReport.unsupportedHosts', {
+                hosts: unsupportedHosts.join(', '),
+              })
             );
             this.loading = false;
             return;
           }
 
           alert(
-            `Skipping hosts without aw-watcher-afk buckets: ${unsupportedHosts.join(
-              ', '
-            )}. Work Report will use: ${supportedHosts.join(', ')}`
+            this.$t('ui.workReport.skippingHosts', {
+              unsupported: unsupportedHosts.join(', '),
+              supported: supportedHosts.join(', '),
+            })
           );
           this.selectedHosts = supportedHosts;
         }
@@ -270,10 +290,18 @@ export default {
         const categoriesStr = JSON.stringify(categories).replace(/\\\\/g, '\\');
 
         const query = buildWorkReportQuery(hostsToQuery, categoriesStr, categoriesFilter);
+        const parameters: CalculationParameters = {
+          categories: [...this.selectedCategories],
+          breakTime: this.breakTime,
+          dateRange: this.dateRange,
+          hosts: hostsToQuery.map(host => host.host),
+          timeperiods: [...timeperiods],
+          expandedCategories: categoriesFilter.map(category => [...category]),
+        };
 
         const results = await client.query(timeperiods, [query]);
 
-        this.dailyData = timeperiods.map((tp, i) => {
+        const dailyData = timeperiods.map((tp, i) => {
           const result = results[i];
           const events = result.events || [];
           const baseDuration = result.duration || 0;
@@ -294,10 +322,14 @@ export default {
           };
         });
 
+        // Publish only after every day was computed successfully. Failed retries
+        // retain the previous result and the inputs that actually produced it.
+        this.dailyData = dailyData;
         this.rawData = results;
+        this.calculationParameters = parameters;
       } catch (error) {
         console.error('Error loading work time data:', error);
-        alert('Error loading data. See console for details.');
+        alert(this.$t('ui.workReport.loadError'));
       } finally {
         this.loading = false;
       }
@@ -322,23 +354,23 @@ export default {
       // "thisMonth" the start anchors to the calendar boundary (not "N days
       // ago"), so on a Wednesday "thisMonth" gives Mar 1..Mar 5, not Mar 1..N.
       let startDate: moment.Moment;
-      const today = moment().startOf('day');
+      const today = moment(get_today_with_offset(offset));
 
       if (this.dateRange === 'last7d') {
         startDate = today.clone().subtract(6, 'days');
       } else if (this.dateRange === 'last30d') {
         startDate = today.clone().subtract(29, 'days');
       } else if (this.dateRange === 'thisWeek') {
-        startDate = moment().startOf('isoWeek');
+        startDate = moment(periodStartDate(today.format('YYYY-MM-DD'), 'week'));
       } else if (this.dateRange === 'thisMonth') {
-        startDate = moment().startOf('month');
+        startDate = today.clone().startOf('month');
       } else {
         startDate = today.clone().subtract(6, 'days');
       }
 
       const days = today.diff(startDate, 'days') + 1;
       for (let i = days - 1; i >= 0; i--) {
-        const date = moment().subtract(i, 'days');
+        const date = today.clone().subtract(i, 'days');
         const start = get_day_start_with_offset(date, offset);
         const end = get_day_end_with_offset(date, offset);
         timeperiods.push(start + '/' + end);
@@ -351,7 +383,9 @@ export default {
       if (!seconds) return '0:00';
       const hours = Math.floor(seconds / 3600);
       const minutes = Math.floor((seconds % 3600) / 60);
-      return `${hours}:${minutes.toString().padStart(2, '0')}`;
+      return `${hours}${this.$t('common.durationHours')} ${minutes}${this.$t(
+        'common.durationMinutes'
+      )}`;
     },
 
     exportCSV() {
@@ -377,11 +411,7 @@ export default {
 
     exportJSON() {
       const data = {
-        parameters: {
-          categories: this.selectedCategories,
-          breakTime: this.breakTime,
-          dateRange: this.dateRange,
-        },
+        parameters: this.calculationParameters,
         summary: {
           totalDuration: this.totalDuration,
           totalSessions: this.totalSessions,

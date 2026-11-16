@@ -19,7 +19,7 @@ div
           toggle-class="p-0 text-muted host-selector-toggle"
           data-testid="host-selector"
         )
-          template(v-slot:button-content)
+          template(v-slot:button-content="")
             span {{ hostLabel }}
           b-dropdown-item(
             :to="routeForHost(allDevicesParam)"
@@ -58,6 +58,47 @@ div
         span {{ activityStore.active.duration | friendlyduration }}
         span.text-muted.ml-2(v-if="activeDays > 1")
           | {{ $t('activity.timeActiveAvg') }} {{ activeAvgSeconds | friendlyduration }}
+      // One compact stacked bar whatever the device count; click it for a
+      // per-device table, which grows vertically instead of wrapping.
+      li.list-group-item.pl-0.pr-3.py-0.border-0(
+        v-if="isMultidevice && hostDurations.length > 1"
+        data-testid="device-breakdown"
+      )
+        a.device-breakdown-toggle#device-breakdown-toggle-btn(
+          href="#"
+          role="button"
+          :aria-expanded="showDeviceBreakdown ? 'true' : 'false'"
+          :title="$t('activity.deviceBreakdownTooltip')"
+          @click.prevent="() => {}"
+          data-testid="device-breakdown-toggle"
+        )
+          span.device-breakdown-bar
+            span.device-breakdown-segment(
+              v-for="(d, i) in hostDurations"
+              :key="d.host"
+              :style="{ width: deviceShare(d) + '%', backgroundColor: deviceColor(i) }"
+              :title="d.host + ': ' + secondsToDuration(d.duration)"
+            )
+          icon.ml-1(:name="showDeviceBreakdown ? 'caret-down' : 'caret-right'" scale="0.8")
+        b-popover(
+          target="device-breakdown-toggle-btn"
+          placement="bottomright"
+          triggers="click blur"
+          custom-class="device-breakdown-popover"
+          @show="showDeviceBreakdown = true"
+          @hide="showDeviceBreakdown = false"
+          data-testid="device-breakdown-popover"
+        )
+          table.table.table-sm.table-borderless.small.mb-0.device-breakdown-table(
+            data-testid="device-breakdown-table"
+          )
+            tr(v-for="(d, i) in hostDurations" :key="d.host")
+              td.pl-0.text-truncate.device-breakdown-host(:title="d.host")
+                span.device-breakdown-swatch.mr-1(:style="{ backgroundColor: deviceColor(i) }")
+                | {{ d.host }}
+              td.text-right.text-nowrap {{ d.duration | friendlyduration }}
+              td.text-muted.text-nowrap
+                span(v-if="d.overlap >= 60") ({{ secondsToDuration(d.overlap) }} {{ $t('activity.overlap') }})
     b-alert.py-1.px-2.mb-1.small(
       v-if="isMultidevice && !multideviceNoteDismissed"
       show
@@ -71,7 +112,25 @@ div
         b.mr-1 {{ $t('activity.queryRange') }}
         span {{ periodReadableRange }}
 
-  b-alert(v-if="invalidRange" variant="warning" show) {{ $t('activity.invalidRange') }}
+  b-alert(v-if="invalidRange" variant="warning" show) {{ periodLength === 'interval' ? $t('activity.invalidInterval') : $t('activity.invalidRange') }}
+  b-alert.py-1(v-if="intervalIssue" variant="warning" show data-testid="interval-issue")
+    span {{ intervalIssue.message }}
+    b-form-select.ml-2(
+      v-if="intervalIssue.options"
+      size="sm"
+      style="width: auto"
+      :options="intervalIssue.options"
+      :aria-label="intervalIssue.message"
+      @change="editInterval(intervalIssue.field, intervalIssue.wall, $event)"
+    )
+  b-alert.activity-diagnostic(
+    v-if="activityDiagnostic"
+    variant="warning"
+    show
+    data-testid="activity-diagnostic"
+  )
+    span {{ activityDiagnosticMessage }}
+    router-link.ml-1(to="/buckets") {{ $t('activity.diagnosticOpenRawData') }}
 
   div.activity-toolbar.d-flex.flex-wrap.align-items-center
     div.d-flex.mr-2
@@ -103,10 +162,10 @@ div
         toggle-class="border-0"
         no-caret
         right
-        title="More ranges"
-        aria-label="More date ranges"
+        :title="$t('ui.activity.moreRanges')"
+        :aria-label="$t('ui.activity.moreDateRanges')"
       )
-        template(v-slot:button-content)
+        template(v-slot:button-content="")
           icon(name="ellipsis-v")
         b-dropdown-item-button(
           v-for="opt in extendedPeriods"
@@ -117,10 +176,10 @@ div
 
     b-input-group.mr-2(v-if="!invalidRange && periodLength !== 'all'" size="sm" style="width: auto")
       b-input-group-prepend
-        b-button.px-2(:to="link_prefix + '/' + previousPeriod() + '/' + subview + '/' + currentViewId",
+        b-button.px-2(:to="{ path: link_prefix + '/' + previousPeriod() + '/' + subview + '/' + currentViewId, query: $route.query }",
                  variant="outline-dark",
-                 :title="'Previous ' + periodLength",
-                 :aria-label="'Previous ' + periodLength")
+                 :title="$t('activity.previousPeriod', { period: periodLength })",
+                 :aria-label="$t('activity.previousPeriod', { period: periodLength })")
           icon(name="arrow-left")
       template(v-if="dateRange")
         input.form-control.form-control-sm.activity-dateinput(
@@ -140,6 +199,25 @@ div
           :title="$t('activity.rangeEnd')"
           @change="setRange(dateRange.start, $event.target.value)"
         )
+      template(v-else-if="exactInterval")
+        input.form-control.form-control-sm.activity-datetimeinput(
+          type="datetime-local"
+          step="1"
+          :value="instantToWall(exactInterval.start)"
+          :aria-label="$t('activity.intervalStart')"
+          :title="$t('activity.intervalStart')"
+          data-testid="interval-start"
+          @change="editInterval('start', $event.target.value)"
+        )
+        input.form-control.form-control-sm.activity-datetimeinput(
+          type="datetime-local"
+          step="1"
+          :value="instantToWall(exactInterval.end)"
+          :aria-label="$t('activity.intervalEnd')"
+          :title="$t('activity.intervalEnd')"
+          data-testid="interval-end"
+          @change="editInterval('end', $event.target.value)"
+        )
       input.form-control.form-control-sm.activity-dateinput(
         v-else
         type="date"
@@ -149,20 +227,20 @@ div
         @change="setDate($event.target.value, periodLength)"
       )
       b-input-group-append
-        b-button.px-2(:to="link_prefix + '/' + nextPeriod() + '/' + subview + '/' + currentViewId",
+        b-button.px-2(:to="{ path: link_prefix + '/' + nextPeriod() + '/' + subview + '/' + currentViewId, query: $route.query }",
                       :disabled="nextDisabled", variant="outline-dark",
-                      :title="'Next ' + periodLength",
-                      :aria-label="'Next ' + periodLength")
+                      :title="$t('activity.nextPeriod', { period: periodLength })",
+                      :aria-label="$t('activity.nextPeriod', { period: periodLength })")
           icon(name="arrow-right")
 
     div.ml-auto
       b-button-group(size="sm")
-        b-button.px-2(:pressed.sync="showOptions", variant="outline-dark", title="Filters", aria-label="Filters")
+        b-button.px-2(:pressed.sync="showOptions", variant="outline-dark", :title="$t('activity.filters')" :aria-label="$t('activity.filters')")
           icon(name="filter")
           span.d-none.d-md-inline
             |  {{ $t('activity.filters') }}
             b-badge(pill, variant="secondary" v-if="filters_set > 0").ml-2 {{ filters_set }}
-        b-button.px-2(@click="refresh(true)", variant="outline-dark", title="Refresh", aria-label="Refresh")
+        b-button.px-2(@click="refresh(true)", variant="outline-dark", :title="$t('activity.refresh')" :aria-label="$t('activity.refresh')")
           icon(name="sync")
           span.d-none.d-md-inline
             |  {{ $t('activity.refresh') }}
@@ -188,7 +266,7 @@ div
 
     div.col-md-6.mt-2.mt-md-0
       b-form-group(:label="$t('activity.showCategory')" label-cols="5" label-cols-lg="4" style="font-size: 0.88em")
-        b-form-select(v-model="filter_category", :options="categoryStore.category_select(true)" size="sm")
+        b-form-select(v-model="filter_category", :options="categoryOptions" size="sm")
 
 
   // Multi-request loads (Year, All time, long custom ranges, and the
@@ -205,8 +283,9 @@ div
     span(:title="$t('activity.allTimeSlowHint')") 🐌 {{ $t('activity.allTimeSlowHint') }}
   // Neighbouring periods of a custom range aren't meaningful, and 31 of
   // them can span decades of AFK data for long ranges.
-  aw-periodusage(v-else-if="periodLength !== 'range'", :periodusage_arr="periodusage", @update="setDate")
+  aw-periodusage(v-else-if="periodLength !== 'range' && periodLength !== 'interval'", :periodusage_arr="periodusage", @update="setUsagePeriod")
 
+  aw-watcher-liveness-banner(v-if="host" :host="host")
   aw-uncategorized-notification(:periodLength="periodLength")
 
   ul.row.nav.nav-tabs.mt-4
@@ -215,18 +294,19 @@ div
         h6 {{view.name}}
 
     li.nav-item(style="margin-left: auto")
-      a.nav-link(@click="$refs.new_view.show()")
+      a.nav-link(:class="{ disabled: viewSavePending }" :aria-disabled="viewSavePending" @click="!viewSavePending && $refs.new_view.show()")
         h6
           icon(name="plus")
           span.d-none.d-md-inline
             | {{ $t('activity.newView') }}
 
-  b-modal(id="new_view" ref="new_view" :title="$t('activity.newViewTitle')" @show="resetModal" @hidden="resetModal" @ok="handleOk")
+  b-modal(id="new_view" ref="new_view" :title="$t('activity.newViewTitle')" :ok-disabled="viewSavePending" :cancel-disabled="newViewSaving" :hide-header-close="newViewSaving" :no-close-on-backdrop="newViewSaving" :no-close-on-esc="newViewSaving" @show="resetModal" @hidden="resetModal" @ok="handleOk")
     div.my-1
+      b-alert(:show="newViewError !== ''" variant="danger") {{ newViewError }}
       b-input-group.my-1(:prepend="$t('activity.viewId')")
-        b-form-input(v-model="new_view.id")
+        b-form-input(v-model="new_view.id" :disabled="viewSavePending")
       b-input-group.my-1(:prepend="$t('activity.viewName')")
-        b-form-input(v-model="new_view.name")
+        b-form-input(v-model="new_view.name" :disabled="viewSavePending")
 
   div
     router-view
@@ -250,9 +330,56 @@ div
   margin-bottom: 0.5rem;
 }
 
+.device-breakdown-toggle {
+  display: inline-flex;
+  align-items: center;
+  color: inherit;
+}
+
+.device-breakdown-bar {
+  display: inline-flex;
+  width: 10rem;
+  height: 0.6rem;
+  border-radius: 0.2rem;
+  overflow: hidden;
+  background-color: $lightBorderColor;
+}
+
+.device-breakdown-segment {
+  height: 100%;
+}
+
+.device-breakdown-table {
+  width: auto;
+
+  td {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}
+
+.device-breakdown-host {
+  max-width: 14rem;
+}
+
+.device-breakdown-swatch {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 0.1rem;
+}
+
 .host-selector-row {
   white-space: nowrap;
   line-height: 1.8;
+}
+
+.activity-datetimeinput {
+  // Wide enough for "2026-10-20 13:00" plus the native picker icon, but still
+  // allowed to shrink so both inputs fit a phone-width toolbar.
+  width: 12.5rem;
+  min-width: 0;
+  flex: 1 1 10rem;
 }
 
 .activity-dateinput {
@@ -304,12 +431,23 @@ div
 <script lang="ts">
 import { mapState } from 'pinia';
 import moment from 'moment';
-import { get_day_start_with_offset, get_today_with_offset } from '~/util/time';
+import { get_day_start_with_offset, get_today_with_offset, seconds_to_duration } from '~/util/time';
 import {
   DateRange,
+  TimePeriod,
+  ExactInterval,
   dateRangeToTimeperiod,
+  exactIntervalReadable,
+  exactIntervalToTimeperiod,
   formatDateRange,
+  formatExactInterval,
+  instantToWall,
   parseDateRange,
+  parseExactInterval,
+  shiftExactInterval,
+  wallTimeInstants,
+  MAX_INTERVAL_MS,
+  formatInstant,
   periodStartDate,
   shiftDateRange,
 } from '~/util/timeperiod';
@@ -328,6 +466,8 @@ import 'vue-awesome/icons/ellipsis-v';
 import 'vue-awesome/icons/layer-group';
 import 'vue-awesome/icons/mobile';
 import 'vue-awesome/icons/desktop';
+import 'vue-awesome/icons/caret-down';
+import 'vue-awesome/icons/caret-right';
 
 import { useSettingsStore } from '~/stores/settings';
 import { useCategoryStore } from '~/stores/categories';
@@ -344,17 +484,24 @@ import {
   resolveHostSelection,
   toggleHostInSelection,
 } from '~/util/multidevice';
+import type { HostDuration } from '~/util/multidevice';
+import { schemeTableau10 } from 'd3';
 import { getClient } from '~/util/awclient';
 import { nextEarliestDate } from '~/util/earliestEvent';
 import {
   isMultideviceNoteDismissed,
   persistMultideviceNoteDismissed,
 } from '~/util/multideviceNote';
+import {
+  ActivityDiagnostic,
+  activityDiagnostic as diagnoseActivity,
+} from '~/util/activityDiagnostics';
 
 export default {
   name: 'Activity',
   components: {
     'aw-uncategorized-notification': () => import('~/components/UncategorizedNotification.vue'),
+    'aw-watcher-liveness-banner': () => import('~/components/WatcherLivenessBanner.vue'),
   },
   props: {
     host: String,
@@ -382,8 +529,12 @@ export default {
       today: null,
       showOptions: false,
       multideviceNoteDismissed: isMultideviceNoteDismissed(),
+      showDeviceBreakdown: false,
       // First day with data for the host, used by All time
       earliestDate: null,
+      // Problem with the last exact start/end edit (nonexistent or repeated DST time, bad order)
+      intervalIssue: null,
+      navigationNow: Date.now(),
 
       include_audible: true,
       // Include stopwatch events when a stopwatch bucket exists. The
@@ -394,11 +545,22 @@ export default {
       // stopwatch run produced "No data" unless they also flipped the
       // dev-only "Include manually logged events" checkbox.
       include_stopwatch: true,
+      refreshing: false,
+      refreshGeneration: 0,
       filter_afk: true,
       new_view: {},
+      newViewSaving: false,
+      newViewError: '',
     };
   },
   computed: {
+    viewSavePending() {
+      return this.newViewSaving || this.viewsStore.saving;
+    },
+    categoryOptions() {
+      return this.categoryStore.category_select(true, key => this.$t(key) as string);
+    },
+
     views(): import('~/stores/views').View[] {
       return this.viewsStore.viewsForHost(this.host);
     },
@@ -434,6 +596,7 @@ export default {
         last7d: this.$t('activity.periodLast7d').toString(),
         last30d: this.$t('activity.periodLast30d').toString(),
         range: this.$t('activity.periodCustomRange').toString(),
+        interval: this.$t('activity.periodExactInterval').toString(),
         all: this.$t('activity.periodAllTime').toString() + ' 🐌',
       };
       return periods;
@@ -445,7 +608,7 @@ export default {
       if (this.periodLength === 'last30d') {
         return this.$t('activity.periodLast30dTitle');
       }
-      if (this.periodLength === 'range') {
+      if (this.periodLength === 'range' || this.periodLength === 'interval') {
         return this.periodReadableRange;
       }
       if (this.periodLength === 'all') {
@@ -475,6 +638,9 @@ export default {
     currentView: function () {
       return this.views.find(v => v.id == this.$route.params.view_id) || this.views[0];
     },
+    needsCategoryHistory() {
+      return !!this.currentView?.elements.some(el => el.type === 'timeline_barchart');
+    },
     currentViewId: function () {
       // If localStore is not yet initialized, then currentView can be undefined. In that case, we return an empty string (which should route to the default view)
       return this.currentView !== undefined ? this.currentView.id : '';
@@ -484,6 +650,11 @@ export default {
       if (this.periodLength !== 'range') return null;
       return parseDateRange(this.date);
     },
+    // Set when periodLength is 'interval' and the :date segment is a valid exact `start..end`
+    exactInterval: function (): ExactInterval | null {
+      if (this.periodLength !== 'interval') return null;
+      return parseExactInterval(this.date);
+    },
     // All time is the range from the host's first day with data to today
     allTimeRange: function (): DateRange | null {
       if (this.periodLength !== 'all' || !this.earliestDate) return null;
@@ -491,12 +662,53 @@ export default {
       return { start: this.earliestDate < today ? this.earliestDate : today, end: today };
     },
     invalidRange: function () {
-      return this.periodLength === 'range' && !this.dateRange;
+      return (
+        (this.periodLength === 'range' && !this.dateRange) ||
+        (this.periodLength === 'interval' && !this.exactInterval)
+      );
+    },
+    activityDiagnostic: function (): ActivityDiagnostic | null {
+      return diagnoseActivity({
+        host: this.host,
+        buckets: this.bucketsStore.buckets,
+        isMultidevice: this.isMultidevice,
+        isMobile: this.isMobileHost(this.host),
+        queryComplete: this.activityStore.loaded && this.activityStore.window.top_apps !== null,
+        rawWindowDuration: this.activityStore.window.raw_duration,
+      });
+    },
+    activityDiagnosticMessage: function (): string {
+      if (!this.activityDiagnostic) return '';
+      const params = { host: this.activityDiagnostic.host };
+      if (this.activityDiagnostic.kind === 'ambiguous-window') {
+        return this.$t('activity.diagnosticAmbiguousWindow', {
+          ...params,
+          buckets: this.activityDiagnostic.bucketIds.join(', '),
+        }).toString();
+      }
+      if (this.activityDiagnostic.kind === 'mismatched-hostnames') {
+        return this.$t('activity.diagnosticMismatchedHostnames', {
+          ...params,
+          windowHosts: this.activityDiagnostic.windowHosts.join(', '),
+          afkHosts: this.activityDiagnostic.afkHosts.join(', '),
+        }).toString();
+      }
+      const key = {
+        'missing-window': 'diagnosticMissingWindow',
+        'missing-afk': 'diagnosticMissingAfk',
+        'no-window-events': 'diagnosticNoWindowEvents',
+      }[this.activityDiagnostic.kind];
+      return this.$t(`activity.${key}`, params).toString();
     },
     _date: function () {
       const offset = this.settingsStore.startOfDay;
       if (this.periodLength === 'range') {
         return this.dateRange ? this.dateRange.start : get_today_with_offset(offset);
+      }
+      if (this.periodLength === 'interval') {
+        return this.exactInterval
+          ? moment(this.exactInterval.start).format('YYYY-MM-DD')
+          : get_today_with_offset(offset);
       }
       const baseDate = this.date || get_today_with_offset(offset);
       if (['week', 'month', 'year'].includes(this.periodLength)) {
@@ -509,6 +721,11 @@ export default {
     },
     nextDisabled: function () {
       const today = this.todayDate;
+      if (this.exactInterval) {
+        return moment(shiftExactInterval(this.exactInterval, 1).start).isSameOrAfter(
+          this.navigationNow
+        );
+      }
       if (this.dateRange) {
         return shiftDateRange(this.dateRange, 1).start > today;
       }
@@ -530,6 +747,9 @@ export default {
     // The device selection encoded in the :host route param
     hostSelection(): HostSelection {
       return parseHostParam(this.host, this.bucketsStore.hosts);
+    },
+    hostDurations(): HostDuration[] {
+      return this.activityStore.window.host_durations;
     },
     isMultidevice(): boolean {
       return isMultiHostSelection(this.hostSelection);
@@ -577,21 +797,26 @@ export default {
       return `/activity/${this.hostParam}/${this.periodLength}`;
     },
     periodusage: function () {
-      if (!this.timeperiod) return [];
+      // Neighbouring periods of an exact interval would be ±15 sub-day slices
+      if (!this.timeperiod || this.periodLength === 'interval') return [];
       return this.activityStore.getActiveHistoryAroundTimeperiod(this.timeperiod);
     },
-    // Calendar days spanned by the current query range (week → 7, month →
-    // 28-31, custom range → its day count). Drives the avg/day display.
+    // Calendar days the avg/day divisor covers: the range's full day count,
+    // but for a range still in progress (current week/month/year) only the
+    // days elapsed so far — dividing an unfinished week by 7 undercounts the
+    // real daily average.
     activeDays: function () {
       if (!this.timeperiod) return 1;
       const start = moment(this.timeperiod.start);
-      return start
+      const total = start
         .clone()
         .add(
           this.timeperiod.length[0],
           this.timeperiod.length[1] as moment.unitOfTime.DurationConstructor
         )
         .diff(start, 'days');
+      const elapsed = Math.ceil(moment().diff(start, 'days', true));
+      return Math.max(1, Math.min(total, elapsed));
     },
     activeAvgSeconds: function () {
       return this.activityStore.active.duration / this.activeDays;
@@ -599,14 +824,17 @@ export default {
     timeperiod: function () {
       const settingsStore = useSettingsStore();
 
-      if (this.dateRange) {
+      if (this.exactInterval) {
+        // Exact instants: no start-of-day offset applies
+        return exactIntervalToTimeperiod(this.exactInterval);
+      } else if (this.dateRange) {
         return dateRangeToTimeperiod(this.dateRange, settingsStore.startOfDay);
       } else if (this.periodLength === 'all') {
         // null until the earliest date is known; refresh() waits for it
         return this.allTimeRange
           ? dateRangeToTimeperiod(this.allTimeRange, settingsStore.startOfDay)
           : null;
-      } else if (this.periodLength === 'range') {
+      } else if (this.periodLength === 'range' || this.periodLength === 'interval') {
         // Invalid range in the URL: fall back to today (a warning is shown)
         return {
           start: get_day_start_with_offset(this._date, settingsStore.startOfDay),
@@ -634,7 +862,14 @@ export default {
       }
     },
     periodReadableRange: function () {
-      if (this.periodLength === 'range' || this.periodLength === 'all') {
+      if (this.exactInterval) {
+        return exactIntervalReadable(this.timeperiod);
+      }
+      if (
+        this.periodLength === 'range' ||
+        this.periodLength === 'interval' ||
+        this.periodLength === 'all'
+      ) {
         // Show both ends as picked/derived (end inclusive)
         const range = this.dateRange || this.allTimeRange || { start: this._date, end: this._date };
         return `${range.start}—${range.end}`;
@@ -667,6 +902,12 @@ export default {
     },
   },
   watch: {
+    async needsCategoryHistory(needed) {
+      // Switched to a view with the timeline barchart after a load that skipped it
+      if (needed && !this.refreshing) {
+        await this.activityStore.ensure_category_history();
+      }
+    },
     host: function () {
       this.earliestDate = null;
       this.loadEarliestDate();
@@ -676,6 +917,7 @@ export default {
       this.loadEarliestDate();
     },
     timeperiod: function () {
+      this.intervalIssue = null;
       this.refresh();
     },
     filter_category: function () {
@@ -709,11 +951,26 @@ export default {
   },
 
   methods: {
+    secondsToDuration(seconds: number): string {
+      return seconds_to_duration(seconds);
+    },
+    // By position rather than a hash of the hostname, so neighbouring
+    // segments never share a colour (up to ten devices).
+    deviceColor(index: number): string {
+      return schemeTableau10[index % schemeTableau10.length];
+    },
+    deviceShare(d: HostDuration): number {
+      const total = this.hostDurations.reduce((sum, h) => sum + h.duration, 0);
+      return total > 0 ? (100 * d.duration) / total : 0;
+    },
     dismissMultideviceNote: function () {
       this.multideviceNoteDismissed = true;
       persistMultideviceNoteDismissed();
     },
     previousPeriod: function () {
+      if (this.exactInterval) {
+        return formatExactInterval(shiftExactInterval(this.exactInterval, -1));
+      }
       if (this.dateRange) {
         return formatDateRange(shiftDateRange(this.dateRange, -1));
       }
@@ -727,6 +984,9 @@ export default {
         .format('YYYY-MM-DD');
     },
     nextPeriod: function () {
+      if (this.exactInterval) {
+        return formatExactInterval(shiftExactInterval(this.exactInterval, 1));
+      }
       if (this.dateRange) {
         const next = shiftDateRange(this.dateRange, 1);
         // Clip at today, like setRange (only reachable when next.start <= today)
@@ -743,6 +1003,47 @@ export default {
           this.timeperiod.length[1] as moment.unitOfTime.DurationConstructor
         )
         .format('YYYY-MM-DD');
+    },
+
+    instantToWall,
+
+    // Edit one end of the exact interval from a local wall time. A wall time that
+    // does not exist (spring-forward gap) is rejected, and one that happens twice
+    // (fall-back) asks which occurrence is meant instead of silently choosing.
+    editInterval: function (field: 'start' | 'end', wall: string, pick?: string) {
+      this.intervalIssue = null;
+      const current = this.exactInterval;
+      if (!current || !wall) return;
+      const candidates = wallTimeInstants(wall);
+      if (candidates.length === 0) {
+        this.intervalIssue = {
+          message: this.$t('activity.intervalNonexistentTime').toString(),
+        };
+        return;
+      }
+      if (candidates.length > 1 && !candidates.includes(pick)) {
+        this.intervalIssue = {
+          message: this.$t('activity.intervalAmbiguousTime').toString(),
+          field,
+          wall,
+          options: [
+            { value: null, text: '—', disabled: true },
+            ...candidates.map(c => ({ value: c, text: moment(c).format('HH:mm Z') })),
+          ],
+        };
+        return;
+      }
+      const next = { ...current, [field]: candidates.length > 1 ? pick : candidates[0] };
+      const span = moment(next.end).valueOf() - moment(next.start).valueOf();
+      if (span <= 0) {
+        this.intervalIssue = { message: this.$t('activity.intervalEndAfterStart').toString() };
+        return;
+      }
+      if (span > MAX_INTERVAL_MS) {
+        this.intervalIssue = { message: this.$t('activity.intervalTooLong').toString() };
+        return;
+      }
+      this.pushPeriod('interval', formatExactInterval(next));
     },
 
     setRange: function (start: string, end: string) {
@@ -766,6 +1067,14 @@ export default {
       }
     },
 
+    setUsagePeriod: function (period: TimePeriod) {
+      const anchor = moment(period.start);
+      if (this.periodLength === 'last7d' || this.periodLength === 'last30d') {
+        anchor.add(period.length[0] - 1, 'days');
+      }
+      this.setDate(anchor.format('YYYY-MM-DD'));
+    },
+
     setDate: function (date, periodLength) {
       // periodLength is an optional argument, default to this.periodLength
       if (!periodLength) {
@@ -779,6 +1088,25 @@ export default {
 
       if (periodLength === 'all') {
         this.pushPeriod('all', null);
+        return;
+      }
+
+      if (periodLength === 'interval') {
+        // Entering exact-times mode: start from the interval the view shows now
+        // (clipped to the interval budget), so the bounds are exact and editable.
+        if (!this.timeperiod || this.periodLength === 'interval') return;
+        const start = moment(this.timeperiod.start);
+        const end = start
+          .clone()
+          .add(
+            this.timeperiod.length[0],
+            this.timeperiod.length[1] as moment.unitOfTime.DurationConstructor
+          );
+        const capped = moment.min(end, start.clone().add(MAX_INTERVAL_MS, 'milliseconds'));
+        this.pushPeriod(
+          'interval',
+          formatExactInterval({ start: formatInstant(start), end: formatInstant(capped) })
+        );
         return;
       }
 
@@ -839,6 +1167,8 @@ export default {
       } else if (periodLength == '30 days') {
         periodLength = 'last30d';
         new_date = anchorDate.clone().add(1, 'days').format('YYYY-MM-DD');
+      } else if (periodLength === 'last7d' || periodLength === 'last30d') {
+        new_date = anchorDate.format('YYYY-MM-DD');
       } else {
         new_date = periodStartDate(anchorDate.format('YYYY-MM-DD'), periodLength);
       }
@@ -868,6 +1198,8 @@ export default {
     },
 
     refresh: async function (force) {
+      // Invalidate the cached navigation boundary when refreshing newly recorded activity.
+      this.navigationNow = Date.now();
       if (force && this.periodLength === 'all') {
         // Cancel the running All time query now rather than after the lookup
         getClient().abort();
@@ -888,11 +1220,26 @@ export default {
         filter_afk: this.filter_afk,
         include_audible: this.include_audible,
         include_stopwatch: this.include_stopwatch,
+        include_category_history: this.needsCategoryHistory,
         filter_categories: this.filter_categories,
         always_active_pattern: this.always_active_pattern,
-        skip_active_history: this.periodLength === 'range' || this.periodLength === 'all',
+        skip_active_history:
+          this.periodLength === 'range' ||
+          this.periodLength === 'interval' ||
+          this.periodLength === 'all',
+        all_time: this.periodLength === 'all',
       };
-      await this.activityStore.ensure_loaded(queryOptions);
+      const generation = ++this.refreshGeneration;
+      this.refreshing = true;
+      try {
+        await this.activityStore.ensure_loaded(queryOptions);
+        // The view may have changed to one that shows it while loading.
+        if (generation === this.refreshGeneration && this.needsCategoryHistory) {
+          await this.activityStore.ensure_category_history();
+        }
+      } finally {
+        if (generation === this.refreshGeneration) this.refreshing = false;
+      }
     },
 
     hostParamFor(hosts: string[]): string {
@@ -950,24 +1297,31 @@ export default {
       this.handleSubmit();
     },
 
-    handleSubmit() {
-      // Exit when the form isn't valid
-      const valid = this.checkFormValidity();
-      if (!valid) {
-        return;
-      }
+    async handleSubmit() {
+      // Check before adding: a pending save will reload its earlier snapshot.
+      if (this.viewSavePending || !this.checkFormValidity()) return;
 
       const viewsStore = useViewsStore();
-      viewsStore.addView({ id: this.new_view.id, name: this.new_view.name, elements: [] });
-      viewsStore.save();
-
-      // Hide the modal manually
-      this.$nextTick(() => {
-        this.$refs.new_view.hide();
-      });
+      const id = this.new_view.id;
+      this.newViewSaving = true;
+      this.newViewError = '';
+      viewsStore.addView({ id, name: this.new_view.name, elements: [] });
+      try {
+        await viewsStore.save();
+      } catch (error) {
+        // Retain any pre-existing layout draft, but let this form retry the id.
+        if (viewsStore.getViewById(id)) viewsStore.removeView({ view_id: id });
+        this.newViewError = error instanceof Error ? error.message : String(error);
+        return;
+      } finally {
+        this.newViewSaving = false;
+      }
+      // Navigation can unmount the form while persistence is pending.
+      this.$refs.new_view?.hide();
     },
 
     resetModal() {
+      this.newViewError = '';
       this.new_view = {
         id: '',
         name: '',

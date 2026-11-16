@@ -2,17 +2,17 @@
 div
   div.d-sm-flex.justify-content-between
     div
-      h5.mt-1.mb-2.mb-sm-0 Privacy filters
+      h5.mt-1.mb-2.mb-sm-0 {{ $t('settings.privacyFilters.title') }}
     div
       b-btn.ml-1(@click="resetEditor" variant="outline-warning" size="sm" :disabled="!hasUnsavedChanges || isSaving")
-        | Discard
+        | {{ $t('settings.privacyFilters.discard') }}
       b-btn.ml-1(@click="savePrivacyFilters" variant="success" size="sm" :disabled="!canSave")
-        | Save
+        | {{ $t('settings.privacyFilters.save') }}
   p.mt-2.mb-2
-    | Regex-based rules that drop or redact sensitive event data before it is stored.
-    | Rules are saved to the server setting #[code privacy_filters] and used by aw-server-rust.
+    | {{ $t('settings.privacyFilters.help') }}
+    | {{ $t('settings.privacyFilters.settingHelp') }} #[code privacy_filters] {{ $t('settings.privacyFilters.serverHelp') }}
   small.text-muted
-    | Leave the editor empty or save <code>[]</code> to disable the feature.
+    | {{ $t('settings.privacyFilters.disabledHelp') }}
 
   b-alert.mt-3(:show="saveError !== ''" variant="danger")
     | {{ saveError }}
@@ -22,7 +22,7 @@ div
       | {{ error }}
 
   b-alert.mt-3(:show="hasUnsavedChanges && validationErrors.length === 0" variant="warning")
-    | You have unsaved changes.
+    | {{ $t('settings.privacyFilters.unsavedChanges') }}
 
   b-form-textarea.mt-3(
     v-model="editorText"
@@ -33,17 +33,20 @@ div
   )
 
   small.d-block.text-muted.mt-2
-    | Each rule needs #[code enabled], #[code pattern], #[code action], and #[code field].
-    | Redact rules also need #[code replacement].
-    | Regex syntax is validated by the server when you save.
+    | {{ $t('settings.privacyFilters.ruleHelp') }} #[code enabled], #[code pattern], #[code action], {{ $t('settings.privacyFilters.and') }} #[code field].
+    | {{ $t('settings.privacyFilters.redactHelp') }} #[code replacement].
+    | {{ $t('settings.privacyFilters.regexHelp') }}
 
-  small.d-block.text-muted.mt-3 Example
+  small.d-block.text-muted.mt-3 {{ $t('settings.privacyFilters.example') }}
   pre.mt-3.mb-0.small(style="white-space: pre-wrap") {{ exampleText }}
 </template>
 
 <script lang="ts">
+import { isEqual } from 'lodash';
 import { useSettingsStore } from '~/stores/settings';
+import { getClient } from '~/util/awclient';
 import {
+  PrivacyFilterRule,
   DEFAULT_PRIVACY_FILTERS,
   formatPrivacyFilters,
   validatePrivacyFiltersInput,
@@ -87,6 +90,11 @@ export default {
     'settingsStore.privacy_filters': {
       deep: true,
       handler() {
+        // While saving, the store holds the submitted rules optimistically;
+        // only the save's outcome may move the saved baseline.
+        if (this.isSaving) {
+          return;
+        }
         this.syncFromStore(false);
       },
     },
@@ -111,15 +119,63 @@ export default {
         return;
       }
 
+      const rules = this.validationResult.rules || [];
+      let confirmed = JSON.parse(JSON.stringify(this.settingsStore.privacy_filters));
+      const submittedText = this.editorText;
       this.isSaving = true;
       this.saveError = '';
       try {
-        await this.settingsStore.update({
-          privacy_filters: this.validationResult.rules || [],
+        await this.settingsStore.ensureLoaded();
+        // Loading may have replaced defaults with persisted rules. Keep those
+        // as the fallback if both the write and the recovery read fail.
+        confirmed = JSON.parse(JSON.stringify(this.settingsStore.privacy_filters));
+        // Hold the submitted rules in the store during the request: a
+        // concurrent save of another setting writes every key that differs
+        // from the server, and must not write the old rules back.
+        this.settingsStore.$patch(state => {
+          state.privacy_filters = rules;
         });
-        this.syncFromStore(true);
+        await getClient().req.post('/0/settings/privacy_filters', rules, {
+          headers: { 'Content-Type': 'application/json' },
+        });
+        this.savedText = formatPrivacyFilters(rules);
+        if (this.editorText === submittedText) {
+          // Keep edits made while the save was pending.
+          this.editorText = this.savedText;
+        }
       } catch (error) {
-        this.saveError = error instanceof Error ? error.message : String(error);
+        // The server decides what was persisted (the write may have landed
+        // before the error). Fall back to the last confirmed rules if it
+        // cannot be asked. The draft stays in the editor for a retry.
+        let persisted = confirmed;
+        try {
+          const serverSettings = (await getClient().get_settings()) as {
+            privacy_filters?: PrivacyFilterRule[];
+          };
+          if (serverSettings.privacy_filters !== undefined) {
+            persisted = serverSettings.privacy_filters;
+          }
+        } catch {
+          // The write outcome is unknown. Keep the last confirmed rules for
+          // the editor, but force the next update to reload before writing
+          // anything: otherwise another setting could write this fallback
+          // over privacy rules that actually reached the server.
+          this.settingsStore.$patch({ _loaded: false });
+        }
+        this.settingsStore.$patch(state => {
+          state.privacy_filters = persisted;
+        });
+        this.savedText = formatPrivacyFilters(persisted);
+        // Compare the JSON payload structurally: the server may reorder object
+        // keys, and JSON omits the validator's undefined optional fields.
+        if (isEqual(persisted, JSON.parse(JSON.stringify(rules)))) {
+          // The write landed; only the response was lost.
+          if (this.editorText === submittedText) {
+            this.editorText = this.savedText;
+          }
+        } else {
+          this.saveError = error instanceof Error ? error.message : String(error);
+        }
       } finally {
         this.isSaving = false;
       }
