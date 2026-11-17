@@ -22,7 +22,7 @@ import * as d3 from 'd3';
 import _ from 'lodash';
 
 import { useCategoryStore } from '~/stores/categories';
-import { seconds_to_duration } from '~/util/time';
+import { seconds_to_duration, shortDuration as shortDurationUtil } from '~/util/time';
 import { IEvent } from '~/util/interfaces';
 
 const thickness = 30;
@@ -199,9 +199,7 @@ function truncate(s: string, max: number): string {
 }
 
 function shortDuration(seconds: number): string {
-  const s = seconds_to_duration(seconds);
-  // "2h 8m 50s" -> "2h 08m"; drop seconds for the compact center label
-  const m = s.match(/^(\d+d)?\s*(\d+h)?\s*(\d+m)?/);
-  return m ? m[0].trim() || s : s;
+  // Compact center label ("2h 8m", seconds dropped), locale-independent
+  return shortDurationUtil(seconds) || seconds_to_duration(seconds);
 }
 </script>

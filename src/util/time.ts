@@ -11,6 +11,23 @@ function normalize_date(dateParam: Date) {
   return new Date(dateParam.getTime());
 }
 
+/**
+ * Compact locale-independent duration for tight chart labels: "2d 3h 4m"
+ * (seconds dropped, empty string when under a minute). Unlike parsing
+ * seconds_to_duration — which is localized ("2小时 34分钟") and therefore
+ * cannot be regex-matched — this builds the string from the number directly.
+ */
+export function shortDuration(seconds: number): string {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const parts: string[] = [];
+  if (d) parts.push(d + 'd');
+  if (h) parts.push(h + 'h');
+  if (m) parts.push(m + 'm');
+  return parts.join(' ');
+}
+
 export function seconds_to_duration(seconds: number) {
   // Returns a human-readable duration string
   const hrs = Math.floor(seconds / 60 / 60);

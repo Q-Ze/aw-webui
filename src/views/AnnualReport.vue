@@ -582,7 +582,7 @@ import {
   YearReport,
   YearReportStats,
 } from '~/util/annualReport';
-import { seconds_to_duration } from '~/util/time';
+import { seconds_to_duration, shortDuration } from '~/util/time';
 import { loadLLMConfig, callLLM } from '~/util/aiSummary';
 
 const AI_CACHE_PREFIX = 'aw-annual-report-ai-';
@@ -814,8 +814,7 @@ export default {
   },
   methods: {
     formatSec(sec: number): string {
-      const m = seconds_to_duration(sec).match(/^(\d+d)?\s*(\d+h)?\s*(\d+m)?/);
-      return m ? m[0].trim() || '<1m' : '<1m';
+      return shortDuration(sec) || '<1m';
     },
     shareOf(sec: number): string {
       if (!this.report || !this.stats || !this.stats.totalSec) return '0';

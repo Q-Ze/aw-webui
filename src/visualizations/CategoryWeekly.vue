@@ -25,7 +25,7 @@ import { useBucketsStore } from '~/stores/buckets';
 import { useCategoryStore } from '~/stores/categories';
 import { useSettingsStore } from '~/stores/settings';
 import { buildMultideviceHostParams } from '~/util/multidevice';
-import { seconds_to_duration } from '~/util/time';
+import { seconds_to_duration, shortDuration } from '~/util/time';
 
 interface DayCat {
   day: string; // YYYY-MM-DD
@@ -280,7 +280,6 @@ export default {
 };
 
 function shortDur(seconds: number): string {
-  const m = seconds_to_duration(seconds).match(/^(\d+d)?\s*(\d+h)?\s*(\d+m)?/);
-  return m ? m[0].trim() || '<1m' : '<1m';
+  return shortDuration(seconds) || '<1m';
 }
 </script>
