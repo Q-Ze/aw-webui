@@ -1,7 +1,8 @@
 // Manual schedule entries stored as events in a server-side bucket.
 //
 // Storage design:
-// - One bucket per machine: aw-webui-schedule_<hostname>, type aw-webui-schedule
+// - Legacy bucket: aw-webui-schedule_<hostname>; new buckets add a unique generation
+//   suffix because some Rust servers replace existing buckets on creation.
 // - Reading unions ALL schedule buckets discovered by id prefix (the synced
 //   variants carry "-synced-from-*" suffixes, exactly like window/afk buckets —
 //   hostname equality matching would silently drop the other machine's entries)
@@ -33,11 +34,15 @@ export interface ScheduleEntryData {
 
 // Server events already carry an optional id (needed for replace/delete);
 // _bucket_id records the origin bucket (set in fetchSchedule).
-export type ScheduleEntry = IEvent & { data: ScheduleEntryData & Record<string, any> };
+export type ScheduleEntry = Omit<IEvent, 'data'> & {
+  data: ScheduleEntryData;
+  _bucket_id?: string;
+};
 
 async function localHostname(): Promise<string> {
   const serverStore = useServerStore();
   if (!serverStore.info) await serverStore.getInfo();
+  if (!serverStore.info?.hostname) throw new Error('无法获取当前设备名称，请检查服务器连接');
   return serverStore.info.hostname;
 }
 
@@ -51,27 +56,86 @@ export function scheduleBucketIds(): string[] {
   return bucketsStore.buckets.filter(b => b.id.startsWith(SCHEDULE_PREFIX)).map(b => b.id);
 }
 
-/** Create the local schedule bucket if it doesn't exist yet. */
+// Share in-flight checks/creation for one client. Do not cache successes:
+// a later save must still check the live server, not a stale catalogue.
+const bucketChecks = new WeakMap<ReturnType<typeof getClient>, Map<string, Promise<string>>>();
+
+/** Recognize local generations, excluding synced copies and similar hostnames. */
+export function isLocalScheduleBucket(id: string, localId: string): boolean {
+  if (id === localId) return true;
+  const prefix = localId + '_generation-';
+  return (
+    id.startsWith(prefix) &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      id.slice(prefix.length)
+    )
+  );
+}
+
+/**
+ * Never recreate a known ID: Rust servers may clear its contents. A GET/POST
+ * pair cannot protect two tabs, origins or devices from concurrent creation.
+ * When no local bucket exists, allocate a fresh generation for this attempt.
+ * Concurrent creators write to distinct buckets; reads union all generations.
+ * On later saves reuse a live local generation. No browser locks are required,
+ * including over LAN HTTP. A failed creation is never retried with the same ID.
+ */
 export async function ensureScheduleBucket(): Promise<string> {
-  const bucketsStore = useBucketsStore();
-  await bucketsStore.ensureLoaded();
   const hostname = await localHostname();
   const id = SCHEDULE_PREFIX + hostname;
-  if (!scheduleBucketIds().includes(id)) {
-    await getClient().createBucket(id, SCHEDULE_TYPE, hostname);
-    await bucketsStore.loadBuckets();
+  const client = getClient();
+  let checks = bucketChecks.get(client);
+  if (!checks) {
+    checks = new Map();
+    bucketChecks.set(client, checks);
   }
-  return id;
+  const existing = checks.get(id);
+  if (existing) return existing;
+  const bucketRequest = (async () => {
+    const exists = async (candidate: string): Promise<boolean> => {
+      try {
+        await client.getBucketInfo(candidate);
+        return true;
+      } catch (err) {
+        if ((err as { response?: { status?: number } } | null)?.response?.status !== 404) throw err;
+        return false;
+      }
+    };
+    if (await exists(id)) return id;
+    const store = useBucketsStore();
+    await store.loadBuckets();
+    const generations = scheduleBucketIds()
+      .filter(candidate => candidate !== id && isLocalScheduleBucket(candidate, id))
+      .sort();
+    for (const candidate of generations) {
+      if (await exists(candidate)) return candidate;
+    }
+    const freshId = id + '_generation-' + newEntryUid();
+    // Even a UUID collision must not overwrite a bucket already on the server.
+    if (await exists(freshId)) return freshId;
+    await client.createBucket(freshId, SCHEDULE_TYPE, hostname);
+    await store.loadBuckets();
+    return freshId;
+  })();
+  checks.set(id, bucketRequest);
+  try {
+    return await bucketRequest;
+  } finally {
+    checks.delete(id);
+  }
 }
 
 /** Fetch all schedule entries overlapping [start, end), merged across buckets. */
-export async function fetchSchedule(start: moment.Moment, end: moment.Moment): Promise<ScheduleEntry[]> {
+export async function fetchSchedule(
+  start: moment.Moment,
+  end: moment.Moment
+): Promise<ScheduleEntry[]> {
   const client = getClient();
   // Wait for the bucket list: landing directly on /schedule races Header's
   // background load, and an empty list here would render an empty calendar
   // with no later refresh to fix it.
   const bucketsStore = useBucketsStore();
-  await bucketsStore.ensureLoaded();
+  await bucketsStore.loadBuckets();
   const ids = scheduleBucketIds();
   const params = { start: start.toDate(), end: end.toDate(), limit: -1 };
   // A failed bucket read must surface as an error, not as "no schedules":
@@ -81,7 +145,7 @@ export async function fetchSchedule(start: moment.Moment, end: moment.Moment): P
     ids.map(async id => {
       const evs = (await client.getEvents(id, params)) as unknown as ScheduleEntry[];
       // Remember the origin bucket so edits/deletes target the right one.
-      evs.forEach(e => ((e as any)._bucket_id = id));
+      evs.forEach(e => (e._bucket_id = id));
       return evs;
     })
   );
@@ -139,18 +203,24 @@ export function newEntryUid(): string {
  * Cross-machine edits of the same entry should be made where it was created.
  */
 export async function saveEntry(entry: ScheduleEntry): Promise<void> {
-  const origin = (entry as any)._bucket_id as string | undefined;
-  if (entry.id !== undefined && !origin) {
+  const bucketOrigin = entry._bucket_id;
+  if (entry.id !== undefined && !bucketOrigin) {
     // An id is only valid inside the bucket it came from; writing it to the
     // local bucket could overwrite an unrelated local entry. Refuse instead
     // of silently falling back.
     throw new Error('editing an existing entry requires its origin bucket (_bucket_id)');
   }
-  const bucketId = origin || (await ensureScheduleBucket());
+  const bucketId = bucketOrigin || (await ensureScheduleBucket());
+  const payload = {
+    id: entry.id,
+    timestamp: entry.timestamp,
+    duration: entry.duration,
+    data: entry.data,
+  };
   if (entry.id !== undefined) {
-    await getClient().replaceEvents(bucketId, [entry as any]);
+    await getClient().replaceEvents(bucketId, [payload as any]);
   } else {
-    await getClient().insertEvents(bucketId, [entry as any]);
+    await getClient().insertEvents(bucketId, [payload as any]);
   }
 }
 
@@ -160,7 +230,8 @@ export async function deleteEntry(entry: ScheduleEntry): Promise<void> {
   }
   // The entry may live in the local bucket or only in a synced copy; try the
   // bucket it was fetched from (recorded in fetchSchedule).
-  const bucketId = (entry as any)._bucket_id || (await ensureScheduleBucket());
+  if (!entry._bucket_id) throw new Error('删除日程需要来源设备信息');
+  const bucketId = entry._bucket_id;
   await getClient().deleteEvent(bucketId, entry.id);
 }
 
@@ -170,8 +241,7 @@ export async function deleteEntry(entry: ScheduleEntry): Promise<void> {
  * local bucket and synced copies.
  */
 export function entryUid(e: ScheduleEntry): string {
-  const origin = (e as any)._bucket_id || '';
-  return `${origin}|${e.id ?? e.timestamp}`;
+  return `${e._bucket_id || ''}|${e.id ?? e.timestamp}`;
 }
 
 // ── 计划 vs 实际 ────────────────────────────────────────────────────────────
@@ -194,15 +264,15 @@ export interface DayActual {
   hourly: number[];
 }
 
-export async function fetchActualForDay(
-  day: moment.Moment,
-  entries: ScheduleEntry[]
-): Promise<DayActual> {
-  const result = new Map<string, EntryActual>();
-  const hourly = new Array(24).fill(0);
-  const ranged = entries.filter(e => !e.data.allDay && (e.duration || 0) > 0);
-  if (ranged.length === 0) return { byEntry: result, hourly };
-
+/**
+ * AFK-filtered, cross-device unioned window events for [start, end) — the
+ * "what actually happened" stream. Chunked; feeds the day timeline and the
+ * week view's actual-activity backdrop alike.
+ */
+export async function fetchActualEvents(
+  start: moment.Moment,
+  end: moment.Moment
+): Promise<IEvent[]> {
   const bucketsStore = useBucketsStore();
   await bucketsStore.ensureLoaded();
   const { host_params, hosts_with_buckets } = buildMultideviceHostParams(
@@ -210,7 +280,7 @@ export async function fetchActualForDay(
     h => bucketsStore.bucketsWindow(h),
     h => bucketsStore.bucketsAFK(h)
   );
-  if (hosts_with_buckets.length === 0) return { byEntry: result, hourly };
+  if (hosts_with_buckets.length === 0) return [];
 
   const vars = queryVarNames(
     hosts_with_buckets.filter(host => host_params[host] && 'bid_window' in host_params[host])
@@ -219,9 +289,10 @@ export async function fetchActualForDay(
   hosts_with_buckets.forEach(host => {
     const p = host_params[host];
     if (!p || !('bid_window' in p)) return;
-    const v = vars.get(host)!;
-    q.push(`events_${v} = flood(query_bucket("${p.bid_window}"));`);
-    q.push(`not_afk_${v} = flood(query_bucket("${p.bid_afk}"));`);
+    const v = vars.get(host);
+    if (!v) return;
+    q.push(`events_${v} = flood(query_bucket(${JSON.stringify(p.bid_window)}));`);
+    q.push(`not_afk_${v} = flood(query_bucket(${JSON.stringify(p.bid_afk)}));`);
     q.push(`not_afk_${v} = filter_keyvals(not_afk_${v}, "status", ["not-afk"]);`);
     q.push(`events_${v} = filter_period_intersect(events_${v}, not_afk_${v});`);
   });
@@ -231,23 +302,64 @@ export async function fetchActualForDay(
   }
   q.push('RETURN = {"events": events};');
 
-  // Day boundaries anchored to the queried day's calendar bounds in local time.
-  const start = day.clone().startOf('day');
-  const end = start.clone().add(1, 'day');
-  const period = `${start.utc().format('YYYY-MM-DD[T]HH:mm:ssZ')}/${end
-    .utc()
-    .format('YYYY-MM-DD[T]HH:mm:ssZ')}`;
-  const data = await getClient().query([period], q, { name: 'scheduleActualQuery' });
-  const events: IEvent[] = (data?.[0]?.events as IEvent[]) || [];
+  // One period per day, queried in <=30-day chunks to keep the serialized
+  // query worker responsive.
+  const periods: string[] = [];
+  for (let d = start.clone(); d.isBefore(end); d.add(1, 'day')) {
+    const e = moment.min(d.clone().add(1, 'day'), end);
+    periods.push(
+      `${d.clone().utc().format('YYYY-MM-DD[T]HH:mm:ssZ')}/${e
+        .clone()
+        .utc()
+        .format('YYYY-MM-DD[T]HH:mm:ssZ')}`
+    );
+  }
+  const events: IEvent[] = [];
+  for (let i = 0; i < periods.length; i += 30) {
+    const data = await getClient().query(periods.slice(i, i + 30), q, {
+      name: 'scheduleActualQuery',
+    });
+    data?.forEach((res: any, index: number) => {
+      const period = periods[i + index];
+      if (!period) return;
+      const [periodStart, periodEnd] = period.split('/').map(value => moment(value).valueOf());
+      for (const event of (res?.events as IEvent[]) || []) {
+        const timestamp = moment(event.timestamp).valueOf();
+        const clippedStart = Math.max(timestamp, periodStart);
+        const clippedEnd = Math.min(timestamp + event.duration * 1000, periodEnd, Date.now());
+        if (Number.isFinite(clippedStart) && clippedEnd > clippedStart) {
+          events.push({
+            ...event,
+            timestamp: moment(clippedStart).toISOString(true),
+            duration: (clippedEnd - clippedStart) / 1000,
+          });
+        }
+      }
+    });
+  }
+  return events;
+}
+
+export async function fetchActualForDay(
+  day: moment.Moment,
+  entries: ScheduleEntry[]
+): Promise<DayActual> {
+  const result = new Map<string, EntryActual>();
+  const hourly = new Array(24).fill(0);
+  const ranged = entries.filter(e => !e.data.allDay && (e.duration || 0) > 0);
+  if (ranged.length === 0) return { byEntry: result, hourly };
+
+  const dayStartM = day.clone().startOf('day');
+  const events = await fetchActualEvents(dayStartM, dayStartM.clone().add(1, 'day'));
 
   // Hourly backdrop from the same event stream (clipped to the day + now).
-  const dayStart = start.valueOf();
+  const dayStart = dayStartM.valueOf();
   const nowMs = Date.now();
   for (const ev of events) {
     let s = moment(ev.timestamp).valueOf();
     let e = s + (ev.duration || 0) * 1000;
     s = Math.max(s, dayStart);
-    e = Math.min(e, dayStart + 86400000, nowMs);
+    e = Math.min(e, dayStartM.clone().add(1, 'day').valueOf(), nowMs);
     if (e <= s) continue;
     let cur = new Date(s);
     const endD = new Date(e);
@@ -310,8 +422,8 @@ export function entryColor(title: string): string {
   // Stable pastel per title hash so recurring entries keep their color.
   let h = 0;
   for (let i = 0; i < title.length; i++) h = (h * 31 + title.charCodeAt(i)) >>> 0;
-  const hue = h % 360;
-  return `hsl(${hue}, 65%, 80%)`;
+  const palette = ['#dfe8fb', '#e0ece9', '#eee5f3', '#f4e8d9'];
+  return palette[h % palette.length];
 }
 
 export function fmtTime(m: moment.Moment): string {
