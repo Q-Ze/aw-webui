@@ -75,6 +75,9 @@ mixin navTools(desktop)
     b-dropdown-item(to="/annual-report")
       icon(name="award")
       | 年度报告
+    b-dropdown-item(to="/schedule")
+      icon(name="calendar-alt")
+      | 日程
     b-dropdown-item(to="/query")
       icon(name="code")
       | {{ $t('nav.query') }}
@@ -180,6 +183,7 @@ div(:class="{'fixed-top-padding': fixedTopMenu}")
 <script lang="ts">
 // only import the icons you use to reduce bundle size
 import 'vue-awesome/icons/calendar-day';
+import 'vue-awesome/icons/calendar-alt';
 import 'vue-awesome/icons/briefcase';
 import 'vue-awesome/icons/dollar-sign';
 import 'vue-awesome/icons/calendar-week';
