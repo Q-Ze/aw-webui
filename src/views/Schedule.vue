@@ -34,8 +34,8 @@ div.schedule-page
       span {{ d.label }}
       b {{ d.date.date() }}
 
-  section.schedule-surface(v-if='viewMode === "week"', aria-label='日程时间网格')
-    FullCalendar.aw-schedule-fc(ref='fc', :options='calendarOptions')
+  section.schedule-surface(v-if='viewMode === "week"', aria-label='日程时间网格', :style='{ "--schedule-zoom": zoom / 100 }')
+    FullCalendar.aw-schedule-fc(ref='fc', :key='zoom', :options='calendarOptions')
 
   section.schedule-surface.schedule-month(v-else, aria-label='月历')
     div.schedule-month-grid
@@ -61,6 +61,12 @@ div.schedule-page
         input(type='checkbox', v-model='showActual')
         i.schedule-legend-actual
         | 显示实际活跃
+    div.schedule-zoom(v-if='viewMode === "week"', role='group', aria-label='时间轴缩放')
+      span 时间轴
+      button(type='button', aria-label='缩小时间轴', :disabled='zoom <= 75', @click='setZoom(zoom - 25)') −
+      button.schedule-zoom-value(type='button', aria-label='恢复默认缩放', @click='setZoom(100)') {{ zoom }}%
+      button(type='button', aria-label='放大时间轴', :disabled='zoom >= 200', @click='setZoom(zoom + 25)') +
+      button.schedule-now(type='button', @click='goToday()') 现在
     span.schedule-status(role='status', aria-live='polite')
       template(v-if='syncing') 正在读取日程…
       template(v-else-if='actualLoading && viewMode === "week"') 正在读取活跃记录…
@@ -150,6 +156,8 @@ export default {
       entries: [] as ScheduleEntry[],
       actualEvents: [] as IEvent[],
       showActual: true,
+      zoom: 100,
+      openingTime: moment().format('HH:mm:ss'),
       selectedEntry: null as ScheduleEntry | null,
       drawerOpen: false,
       loadError: null as string | null,
@@ -267,7 +275,8 @@ export default {
         initialDate: this.fcDate.toDate(),
         firstDay: 1,
         slotDuration: '00:30:00',
-        scrollTime: '08:00:00',
+        scrollTime: this.openingTime,
+        scrollTimeReset: false,
         slotLabelInterval: '01:00:00',
         slotLabelFormat: { hour: '2-digit', minute: '2-digit', hour12: false },
         eventTimeFormat: { hour: '2-digit', minute: '2-digit', hour12: false },
@@ -365,6 +374,7 @@ export default {
         // Schedule reads report connection errors; no write is attempted here.
       });
     this.refresh();
+    this.syncCalendar();
   },
   beforeDestroy() {
     this.disposed = true;
@@ -390,6 +400,58 @@ export default {
       if (api.view.type !== type) api.changeView(type, this.fcDate.toDate());
       else if (!moment(api.getDate()).isSame(this.fcDate, 'day'))
         api.gotoDate(this.fcDate.toDate());
+      await this.$nextTick();
+      const now = moment();
+      const showsToday = this.isMobile
+        ? this.fcDate.isSame(now, 'day')
+        : this.weekStart.isSame(now, 'isoWeek');
+      this.centerTime(
+        showsToday ? now.hours() * 3600 + now.minutes() * 60 + now.seconds() : 8 * 3600
+      );
+    },
+    currentClockSeconds(): number {
+      const now = moment();
+      return now.hours() * 3600 + now.minutes() * 60 + now.seconds();
+    },
+    timeViewport(): { scroller: HTMLElement; slots: HTMLElement } | null {
+      const slots = this.$refs.fc?.$el.querySelector('.fc-timegrid-slots') as HTMLElement;
+      const scroller = slots?.closest('.fc-scroller') as HTMLElement;
+      return slots && scroller ? { slots, scroller } : null;
+    },
+    centerTime(seconds: number) {
+      const viewport = this.timeViewport();
+      if (!viewport) return;
+      const { slots, scroller } = viewport;
+      const rect = slots.getBoundingClientRect();
+      if (!rect.height) {
+        this.$refs.fc?.getApi().scrollToTime({ seconds: Math.max(0, seconds - 7200) });
+        return;
+      }
+      scroller.scrollTop +=
+        rect.top -
+        scroller.getBoundingClientRect().top +
+        (seconds / 86400) * rect.height -
+        scroller.clientHeight / 2;
+    },
+    async setZoom(value: number) {
+      const viewport = this.timeViewport();
+      const slotsRect = viewport?.slots.getBoundingClientRect();
+      // Retain the time at the viewport centre when enlarging or shrinking.
+      const centreSeconds = slotsRect?.height
+        ? ((viewport.scroller.getBoundingClientRect().top +
+            viewport.scroller.clientHeight / 2 -
+            slotsRect.top) /
+            slotsRect.height) *
+          86400
+        : this.currentClockSeconds();
+      // FullCalendar 5 caches slot coordinates: changing CSS height alone leaves
+      // events, hit testing and the now indicator at their old positions. The
+      // zoom key remounts the grid so all coordinates are measured together.
+      this.zoom = Math.max(75, Math.min(200, value));
+      await this.$nextTick();
+      if (this.disposed || this.viewMode !== 'week') return;
+      this.$refs.fc?.getApi().updateSize();
+      this.centerTime(centreSeconds);
     },
     entriesOn(day: moment.Moment): ScheduleEntry[] {
       const start = day.clone().startOf('day').valueOf();
@@ -547,6 +609,7 @@ export default {
     goToday() {
       this.fcDate = moment().startOf('day');
       this.month = this.fcDate.clone().startOf('month');
+      this.syncCalendar();
     },
     gotoDay(date: moment.Moment) {
       this.fcDate = date.clone().startOf('day');
@@ -761,6 +824,37 @@ export default {
     font-size: 12px;
     color: var(--schedule-muted);
   }
+  .schedule-zoom {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .schedule-zoom > span {
+    margin-right: 3px;
+  }
+  .schedule-zoom button {
+    background: transparent;
+    color: var(--schedule-text);
+    border: 1px solid var(--schedule-line);
+    border-radius: 6px;
+    min-width: 28px;
+    height: 28px;
+    padding: 0 6px;
+  }
+  .schedule-zoom button:hover:not(:disabled) {
+    background: var(--schedule-line);
+  }
+  .schedule-zoom button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .schedule-zoom .schedule-zoom-value {
+    width: 48px;
+    font-variant-numeric: tabular-nums;
+  }
+  .schedule-zoom .schedule-now {
+    margin-left: 4px;
+  }
   .schedule-legend span,
   .schedule-actual-toggle {
     display: inline-flex;
@@ -929,7 +1023,7 @@ export default {
     background: var(--schedule-accent);
   }
   .fc-timegrid-slot {
-    height: 26px;
+    height: calc(26px * var(--schedule-zoom, 1));
   }
   .fc-timegrid-slot-label {
     color: var(--schedule-muted);

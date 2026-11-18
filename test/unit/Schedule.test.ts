@@ -267,3 +267,29 @@ it('ignores detail results from an older selection and surfaces detail query fai
   expect(wrapper.vm.detailActualError).toBe(true);
   expect(wrapper.vm.selectedActual).toBeUndefined();
 });
+
+it('returns to today from another week and zooms without refetching calendar data', async () => {
+  const wrapper = await mountSchedule();
+  wrapper.vm.gotoDay(moment().subtract(14, 'days'));
+  await flush();
+  wrapper.vm.goToday();
+  await flush();
+  expect(moment(wrapper.vm.$refs.fc.getApi().getDate()).isSame(moment(), 'day')).toBe(true);
+  const scheduleCalls = mockFetchSchedule.mock.calls.length;
+  const actualCalls = mockFetchActual.mock.calls.length;
+  await wrapper.find('button[aria-label="放大时间轴"]').trigger('click');
+  await flush();
+  expect(wrapper.find('.schedule-zoom-value').text()).toBe('125%');
+  expect(moment(wrapper.vm.$refs.fc.getApi().getDate()).isSame(moment(), 'day')).toBe(true);
+  expect(wrapper.find('section.schedule-surface').attributes('style')).toContain(
+    '--schedule-zoom: 1.25'
+  );
+  expect(mockFetchSchedule).toHaveBeenCalledTimes(scheduleCalls);
+  expect(mockFetchActual).toHaveBeenCalledTimes(actualCalls);
+  await wrapper.vm.setZoom(200);
+  expect(wrapper.find('button[aria-label="放大时间轴"]').attributes('disabled')).toBeDefined();
+  await wrapper.vm.setZoom(75);
+  expect(wrapper.find('button[aria-label="缩小时间轴"]').attributes('disabled')).toBeDefined();
+  await wrapper.find('button[aria-label="恢复默认缩放"]').trigger('click');
+  expect(wrapper.vm.zoom).toBe(100);
+});
