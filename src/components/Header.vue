@@ -34,6 +34,11 @@ mixin navMain
       icon(name="stream")
       | {{ $t('nav.timeline') }}
 
+  b-nav-item(to="/schedule")
+    div.px-2.px-lg-1
+      icon(name="calendar-alt")
+      | 日程
+
   b-nav-item(to="/stopwatch")
     div.px-2.px-lg-1
       icon(name="stopwatch")
@@ -75,9 +80,6 @@ mixin navTools(desktop)
     b-dropdown-item(to="/annual-report")
       icon(name="award")
       | 年度报告
-    b-dropdown-item(to="/schedule")
-      icon(name="calendar-alt")
-      | 日程
     b-dropdown-item(to="/query")
       icon(name="code")
       | {{ $t('nav.query') }}
