@@ -52,13 +52,17 @@ export function seconds_to_duration(seconds: number) {
 export function friendlydate(timestamp: string | Moment) {
   const now = moment();
   const m = moment.parseZone(timestamp);
-  const sinceNow = moment.duration(m.diff(now));
-  if (-sinceNow.asSeconds() <= 60) {
-    return `${Math.round(-sinceNow.asSeconds())}s ago`;
-  } else if (-sinceNow.asSeconds() <= 60 * 60 * 24) {
-    return sinceNow.humanize(true);
+  // >0 past, <0 future. Future timestamps are real (future-dated schedule
+  // entries, the server stretching the last heartbeat past now, clock skew):
+  // print "in X" instead of a nonsensical "-14795s ago".
+  const deltaSeconds = now.diff(m) / 1000;
+  if (deltaSeconds < 0) {
+    return moment.duration(-deltaSeconds, 'seconds').humanize(true);
   }
-  return sinceNow.humanize(true);
+  if (deltaSeconds <= 60) {
+    return `${Math.round(deltaSeconds)}s ago`;
+  }
+  return moment.duration(deltaSeconds, 'seconds').humanize(true);
 }
 
 // Narrow, localized labels on desktop; unit-only ages where table space is tight.

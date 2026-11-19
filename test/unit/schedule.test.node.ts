@@ -56,3 +56,21 @@ describe('queryVarNames', () => {
     expect(new Set(vars.values()).size).toBe(2);
   });
 });
+
+// Regression: future-dated timestamps (future schedule entries, heartbeat
+// stretch) must render as "in X", never a negative "-14795s ago".
+describe('friendlydate with future timestamps', () => {
+  it('never renders a negative seconds count', async () => {
+    const { friendlydate } = await import('~/util/time');
+    const future = new Date(Date.now() + 14795_000).toISOString();
+    const out = friendlydate(future);
+    expect(out).not.toMatch(/^-/);
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  it('keeps rendering recent past timestamps as seconds', async () => {
+    const { friendlydate } = await import('~/util/time');
+    const past = new Date(Date.now() - 30_000).toISOString();
+    expect(friendlydate(past)).toMatch(/^\d+s ago$/);
+  });
+});
