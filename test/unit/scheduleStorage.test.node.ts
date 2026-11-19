@@ -6,11 +6,14 @@ import {
   saveEntry,
   deleteEntry,
   fetchActualEvents,
+  fetchSchedule,
   isLocalScheduleBucket,
 } from '~/util/schedule';
 
 const mockClient = {
   getBucketInfo: jest.fn(),
+  getEvents: jest.fn(),
+  getEvent: jest.fn(),
   createBucket: jest.fn(),
   insertEvents: jest.fn(),
   replaceEvents: jest.fn(),
@@ -197,4 +200,152 @@ it('reuses a live local generation and does not mistake synced copies for local 
   expect(mockClient.createBucket).not.toHaveBeenCalled();
   expect(isLocalScheduleBucket(id + '-synced-from-peer', 'aw-webui-schedule_self')).toBe(false);
   expect(isLocalScheduleBucket(id, 'aw-webui-schedule_other')).toBe(false);
+});
+
+it('appends a minimal deletion marker to the local bucket for a remote entry', async () => {
+  const remote = {
+    id: 7,
+    timestamp: '2020-01-01T09:00:00Z',
+    duration: 3600,
+    data: { title: 'secret title', notes: 'secret notes', uid: 'deleted-uid' },
+    _bucket_id: 'aw-webui-schedule_peer-synced-from-peer',
+  };
+  const before = Date.now();
+  await deleteEntry(remote);
+  expect(mockClient.deleteEvent).not.toHaveBeenCalled();
+  expect(mockClient.replaceEvents).not.toHaveBeenCalled();
+  const [bucket, [marker]] = mockClient.insertEvents.mock.calls[0];
+  expect(bucket).toBe('aw-webui-schedule_self');
+  expect(marker.data).toEqual({ deleted: true, uid: 'deleted-uid' });
+  expect(marker.duration).toBe(0);
+  expect(marker.id).toBeUndefined();
+  expect(Date.parse(marker.timestamp)).toBeGreaterThanOrEqual(before);
+});
+
+it('refuses legacy deletion without a uid instead of hiding unrelated matching entries', async () => {
+  await expect(
+    deleteEntry({
+      id: 7,
+      timestamp: '2020-01-01T00:00:00Z',
+      duration: 0,
+      data: { title: 'legacy' },
+      _bucket_id: 'aw-webui-schedule_self',
+    })
+  ).rejects.toThrow('缺少 uid');
+  expect(mockClient.insertEvents).not.toHaveBeenCalled();
+  expect(mockClient.deleteEvent).not.toHaveBeenCalled();
+});
+
+it('does not report deletion success if writing the tombstone fails', async () => {
+  mockClient.insertEvents.mockRejectedValue(new Error('offline'));
+  await expect(
+    deleteEntry({
+      id: 7,
+      timestamp: '2020-01-01T00:00:00Z',
+      duration: 0,
+      data: { title: 'meeting', uid: 'u' },
+      _bucket_id: 'aw-webui-schedule_peer',
+    })
+  ).rejects.toThrow('offline');
+  expect(mockClient.deleteEvent).not.toHaveBeenCalled();
+});
+
+it('applies an out-of-range tombstone before filtering the viewed week', async () => {
+  mockBuckets = [{ id: 'aw-webui-schedule_self' }, { id: 'aw-webui-schedule_peer' }];
+  const event = {
+    id: 7,
+    timestamp: '2026-11-18T09:00:00+08:00',
+    duration: 3600,
+    data: { title: 'deleted', uid: 'u' },
+  };
+  mockClient.getEvents.mockImplementation(async id =>
+    id.endsWith('self')
+      ? [event]
+      : [
+          {
+            id: 8,
+            timestamp: '2026-12-01T00:00:00Z',
+            duration: 0,
+            data: { deleted: true, uid: 'u' },
+          },
+          {
+            id: 9,
+            timestamp: '2026-11-18T09:00:00+08:00',
+            duration: 3600,
+            data: { title: 'keep', uid: 'other' },
+          },
+          { id: 10, timestamp: '2026-12-01T00:00:00Z', duration: 3600, data: { title: 'outside' } },
+        ]
+  );
+  const entries = await fetchSchedule(moment('2026-11-16'), moment('2026-11-23'));
+  expect(entries.map(e => e.data.title)).toEqual(['keep']);
+  expect(mockClient.getEvents).toHaveBeenCalledWith('aw-webui-schedule_self', { limit: -1 });
+});
+
+it.each(['unchanged', 'different uid', 'later timestamp', 'converted to tombstone'])(
+  'page-load cleanup rechecks the original before physical deletion: %s',
+  async state => {
+    const original = {
+      id: 7,
+      timestamp: '2026-11-18T09:00:00Z',
+      duration: 3600,
+      data: { title: 'meeting', uid: 'u' },
+    };
+    const marker = {
+      id: 8,
+      timestamp: '2026-11-18T10:00:00Z',
+      duration: 0,
+      data: { deleted: true, uid: 'u' },
+    };
+    mockBuckets = [{ id: 'aw-webui-schedule_self' }, { id: 'aw-webui-schedule_peer' }];
+    mockClient.getEvents.mockImplementation(async id =>
+      id.endsWith('self') ? [original] : [marker]
+    );
+    mockClient.getEvent.mockResolvedValue(
+      state === 'different uid'
+        ? { ...original, data: { title: 'new', uid: 'new' } }
+        : state === 'later timestamp'
+        ? { ...original, timestamp: '2026-11-18T11:00:00Z' }
+        : state === 'converted to tombstone'
+        ? marker
+        : original
+    );
+    const output = await fetchSchedule(moment('2026-11-16'), moment('2026-11-23'), {
+      cleanup: true,
+    });
+    expect(output).toEqual([]);
+    expect(mockClient.insertEvents).toHaveBeenCalledWith('aw-webui-schedule_self', [
+      expect.objectContaining({ data: { deleted: true, uid: 'u' } }),
+    ]);
+    if (state === 'unchanged')
+      expect(mockClient.deleteEvent).toHaveBeenCalledWith('aw-webui-schedule_self', 7);
+    else expect(mockClient.deleteEvent).not.toHaveBeenCalled();
+  }
+);
+
+it('reports cleanup failure separately and still hides deleted entries', async () => {
+  const original = {
+    id: 7,
+    timestamp: '2026-11-18T09:00:00Z',
+    duration: 3600,
+    data: { title: 'meeting', uid: 'u' },
+  };
+  const marker = {
+    id: 8,
+    timestamp: '2026-11-18T10:00:00Z',
+    duration: 0,
+    data: { deleted: true, uid: 'u' },
+  };
+  mockBuckets = [{ id: 'aw-webui-schedule_self' }, { id: 'aw-webui-schedule_peer' }];
+  mockClient.getEvents.mockImplementation(async id =>
+    id.endsWith('self') ? [original] : [marker]
+  );
+  const error = new Error('offline');
+  mockClient.insertEvents.mockRejectedValue(error);
+  const onCleanupError = jest.fn();
+  await expect(
+    fetchSchedule(moment('2026-11-16'), moment('2026-11-23'), { cleanup: true, onCleanupError })
+  ).resolves.toEqual([]);
+  expect(onCleanupError).toHaveBeenCalledWith(error);
+  expect(mockClient.deleteEvent).not.toHaveBeenCalled();
 });

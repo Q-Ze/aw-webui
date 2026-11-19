@@ -24,6 +24,8 @@ div.schedule-page
       span {{ loadError }}
       b-button(size='sm', variant='outline-danger', @click='refresh()') 重试
 
+  b-alert(v-if='cleanupError', variant='warning', show) {{ cleanupError }}
+
   nav.schedule-days(v-if='isMobile && viewMode === "week"', aria-label='选择日期')
     button.schedule-day(
       v-for='d in weekDays', :key='d.key', type='button',
@@ -109,7 +111,7 @@ div.schedule-page
         b-form-textarea#schedule-notes(v-model='form.notes', :disabled='saving', rows='3', placeholder='可选')
 
   b-modal(ref='deleteModal', title='删除日程', ok-title='删除', ok-variant='danger', cancel-title='取消', :ok-disabled='deleting', @ok.prevent='confirmDelete')
-    p(v-if='pendingDelete') 确定删除「{{ pendingDelete.data.title }}」？
+    p(v-if='pendingDelete') 确定删除「{{ pendingDelete.data.title }}」？删除标记将同步到其他设备。
     b-alert(v-if='deleteError', variant='danger', show) {{ deleteError }}
 </template>
 
@@ -161,6 +163,7 @@ export default {
       selectedEntry: null as ScheduleEntry | null,
       drawerOpen: false,
       loadError: null as string | null,
+      cleanupError: null as string | null,
       saveError: null as string | null,
       actualError: false,
       actualLoading: false,
@@ -170,6 +173,7 @@ export default {
       pendingDelete: null as ScheduleEntry | null,
       deleteError: null as string | null,
       editing: null as ScheduleEntry | null,
+      editingDeleted: false,
       editingDate: null as moment.Moment | null,
       form: { title: '', allDay: false, start: '09:00', end: '10:00', notes: '' },
       weekdays: ['一', '二', '三', '四', '五', '六', '日'],
@@ -182,6 +186,7 @@ export default {
       detailError: false,
       mediaQuery: null as MediaQueryList | null,
       disposed: false,
+      schedulePoll: null as ReturnType<typeof setInterval> | null,
     };
   },
   computed: {
@@ -239,6 +244,7 @@ export default {
     },
     formIsValid(): boolean {
       return (
+        !this.editingDeleted &&
         !!this.trimmedTitle &&
         (this.form.allDay || (validTime(this.form.start) && validTime(this.form.end)))
       );
@@ -375,9 +381,13 @@ export default {
       });
     this.refresh();
     this.syncCalendar();
+    this.schedulePoll = setInterval(() => {
+      if (!this.disposed && !this.saving && !this.deleting && !this.syncing) this.refreshSchedule();
+    }, 5 * 60_000);
   },
   beforeDestroy() {
     this.disposed = true;
+    if (this.schedulePoll) clearInterval(this.schedulePoll);
     this.scheduleSeq++;
     this.actualSeq++;
     this.detailSeq++;
@@ -490,13 +500,32 @@ export default {
       const range = this.visibleRange;
       this.syncing = true;
       this.loadError = null;
+      this.cleanupError = null;
       try {
-        const entries = await fetchSchedule(range.start, range.end);
+        const entries = await fetchSchedule(range.start, range.end, {
+          cleanup: true,
+          onDeletedUids: uids => {
+            if (
+              seq === this.scheduleSeq &&
+              this.editing?.data.uid &&
+              uids.has(this.editing.data.uid)
+            ) {
+              this.editingDeleted = true;
+              this.saveError = '该日程已被删除，请关闭弹窗后新建日程';
+            }
+          },
+          onCleanupError: error => {
+            if (seq === this.scheduleSeq)
+              this.cleanupError =
+                '已删除日程的清理暂未完成，下次加载会重试：' + this.errorMessage(error);
+          },
+        });
         if (seq !== this.scheduleSeq) return;
         this.entries = entries;
         if (this.selectedEntry)
           this.selectedEntry =
             entries.find(e => entryUid(e) === entryUid(this.selectedEntry)) || null;
+        if (!this.selectedEntry) this.drawerOpen = false;
       } catch (err) {
         if (seq === this.scheduleSeq) this.loadError = '日程读取失败：' + this.errorMessage(err);
       } finally {
@@ -620,6 +649,7 @@ export default {
     },
     openAdd(start = '09:00', end = '10:00', allDay = false, date?: moment.Moment) {
       this.editing = null;
+      this.editingDeleted = false;
       this.editingDate = date ? date.clone().startOf('day') : this.fcDate.clone().startOf('day');
       this.saveError = null;
       this.form = { title: '', allDay, start, end, notes: '' };
@@ -627,6 +657,7 @@ export default {
     },
     openEdit(entry: ScheduleEntry) {
       this.editing = entry;
+      this.editingDeleted = false;
       this.editingDate = moment(entry.timestamp).startOf('day');
       this.saveError = null;
       const start = moment(entry.timestamp);
@@ -642,6 +673,7 @@ export default {
     },
     cancelEdit() {
       this.editing = null;
+      this.editingDeleted = false;
       this.editingDate = null;
     },
     async submit() {
@@ -1021,6 +1053,11 @@ export default {
   .fc-day-today .schedule-fc-number {
     color: #fff;
     background: var(--schedule-accent);
+  }
+  .fc-timegrid-now-indicator-container,
+  .fc-timegrid-now-indicator-line,
+  .fc-timegrid-now-indicator-arrow {
+    pointer-events: none;
   }
   .fc-timegrid-slot {
     height: calc(26px * var(--schedule-zoom, 1));

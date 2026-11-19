@@ -293,3 +293,38 @@ it('returns to today from another week and zooms without refetching calendar dat
   await wrapper.find('button[aria-label="恢复默认缩放"]').trigger('click');
   expect(wrapper.vm.zoom).toBe(100);
 });
+
+it('requests local cleanup on page load and closes details when a synced tombstone hides the entry', async () => {
+  const wrapper = await mountSchedule();
+  expect(mockFetchSchedule.mock.calls[0][2].cleanup).toBe(true);
+  await wrapper.find('.fc-timegrid-event').trigger('click');
+  await flush();
+  expect(wrapper.vm.drawerOpen).toBe(true);
+  mockFetchSchedule.mockImplementationOnce(async (_start, _end, options) => {
+    options.onCleanupError(new Error('cleanup offline'));
+    return [];
+  });
+  await wrapper.vm.refreshSchedule();
+  await flush();
+  expect(wrapper.vm.drawerOpen).toBe(false);
+  expect(wrapper.vm.selectedEntry).toBeNull();
+  expect(wrapper.vm.loadError).toBeNull();
+  expect(wrapper.vm.cleanupError).toContain('cleanup offline');
+});
+
+it('blocks saving an open editor after a remote tombstone is received', async () => {
+  const wrapper = await mountSchedule();
+  wrapper.vm.openEdit(entry);
+  mockFetchSchedule.mockImplementationOnce(async (_start, _end, options) => {
+    options.onDeletedUids(new Set([entry.data.uid]));
+    return [];
+  });
+  await wrapper.vm.refreshSchedule();
+  expect(wrapper.vm.editingDeleted).toBe(true);
+  expect(wrapper.vm.saveError).toContain('已被删除');
+  await wrapper.vm.submit();
+  expect(mockSave).not.toHaveBeenCalled();
+  wrapper.vm.cancelEdit();
+  wrapper.vm.openAdd();
+  expect(wrapper.vm.editingDeleted).toBe(false);
+});

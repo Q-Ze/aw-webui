@@ -61,7 +61,8 @@ describe('ScheduleDetail', () => {
       propsData: { entry: makeEntry(), isRemote: true },
     });
     expect(wrapper.find('[data-testid="schedule-detail-remote-hint"]').exists()).toBe(true);
-    expect(wrapper.text()).toContain('不会同步回原设备');
+    expect(wrapper.text()).toContain('编辑不会同步回原设备');
+    expect(wrapper.text()).toContain('删除标记会同步');
   });
 
   it('says 全天 for all-day entries and hides nothing when actual is absent', () => {

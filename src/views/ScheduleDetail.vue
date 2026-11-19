@@ -8,7 +8,7 @@ article.schedule-detail
   p.schedule-detail-notes(v-if='entry.data.notes') {{ entry.data.notes }}
   div.schedule-detail-warning(v-if='isRemote', data-testid='schedule-detail-remote-hint')
     icon(name='exclamation-triangle', scale='0.8')
-    span 来自其他设备，修改不会同步回原设备
+    span 来自其他设备，编辑不会同步回原设备；删除标记会同步
   section.schedule-detail-activity(v-if='!entry.data.allDay')
     h5 时段内实际活跃
     p.schedule-detail-muted(v-if='actualLoading', role='status') 正在读取活跃记录…

@@ -21,8 +21,18 @@ import { useServerStore } from '~/stores/server';
 import { buildMultideviceHostParams } from '~/util/multidevice';
 import { IEvent } from '~/util/interfaces';
 
+import {
+  SCHEDULE_PREFIX,
+  isLocalScheduleBucket,
+  visibleScheduleRecords,
+  scheduleRecordUid,
+  ScheduleRecord,
+  runScheduleCleanup,
+  isScheduleTombstone,
+} from './scheduleProtocol';
+export { isLocalScheduleBucket } from './scheduleProtocol';
+
 export const SCHEDULE_TYPE = 'aw-webui-schedule';
-const SCHEDULE_PREFIX = 'aw-webui-schedule_';
 
 export interface ScheduleEntryData {
   title: string;
@@ -59,18 +69,6 @@ export function scheduleBucketIds(): string[] {
 // Share in-flight checks/creation for one client. Do not cache successes:
 // a later save must still check the live server, not a stale catalogue.
 const bucketChecks = new WeakMap<ReturnType<typeof getClient>, Map<string, Promise<string>>>();
-
-/** Recognize local generations, excluding synced copies and similar hostnames. */
-export function isLocalScheduleBucket(id: string, localId: string): boolean {
-  if (id === localId) return true;
-  const prefix = localId + '_generation-';
-  return (
-    id.startsWith(prefix) &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-      id.slice(prefix.length)
-    )
-  );
-}
 
 /**
  * Never recreate a known ID: Rust servers may clear its contents. A GET/POST
@@ -128,7 +126,12 @@ export async function ensureScheduleBucket(): Promise<string> {
 /** Fetch all schedule entries overlapping [start, end), merged across buckets. */
 export async function fetchSchedule(
   start: moment.Moment,
-  end: moment.Moment
+  end: moment.Moment,
+  options: {
+    cleanup?: boolean;
+    onCleanupError?: (error: unknown) => void;
+    onDeletedUids?: (uids: Set<string>) => void;
+  } = {}
 ): Promise<ScheduleEntry[]> {
   const client = getClient();
   // Wait for the bucket list: landing directly on /schedule races Header's
@@ -137,20 +140,92 @@ export async function fetchSchedule(
   const bucketsStore = useBucketsStore();
   await bucketsStore.loadBuckets();
   const ids = scheduleBucketIds();
-  const params = { start: start.toDate(), end: end.toDate(), limit: -1 };
+  // Tombstones use deletion time, which can be outside the viewed week/month.
+  // Read the small manual-calendar history in full before applying the range.
+  const params = { limit: -1 };
   // A failed bucket read must surface as an error, not as "no schedules":
   // the page shows a load-error banner so the user can tell an empty calendar
   // apart from a broken one.
   const lists = await Promise.all(
     ids.map(async id => {
-      const evs = (await client.getEvents(id, params)) as unknown as ScheduleEntry[];
+      const evs = (await client.getEvents(id, params)) as unknown as ScheduleRecord[];
       // Remember the origin bucket so edits/deletes target the right one.
       evs.forEach(e => (e._bucket_id = id));
       return evs;
     })
   );
-  const entries = (_.flatten(lists) as ScheduleEntry[]).filter(e => e && e.data && e.data.title);
+  const records = _.flatten(lists) as ScheduleRecord[];
+  options.onDeletedUids?.(new Set(records.filter(isScheduleTombstone).map(scheduleRecordUid)));
+  const entries = visibleScheduleRecords(records).filter(e => {
+    const timestamp = moment(e.timestamp).valueOf();
+    return e.data.allDay || e.duration === 0
+      ? timestamp >= start.valueOf() && timestamp < end.valueOf()
+      : timestamp < end.valueOf() && timestamp + e.duration * 1000 > start.valueOf();
+  }) as ScheduleEntry[];
+  if (options.cleanup) {
+    try {
+      await cleanupScheduleRecords(records);
+    } catch (error) {
+      options.onCleanupError?.(error);
+    }
+  }
   return _.orderBy(dedupeScheduleEntries(entries), e => moment(e.timestamp).valueOf());
+}
+
+// Reuse the read snapshot and serialize maintenance within one webui instance.
+const cleanupJobs = new WeakMap<ReturnType<typeof getClient>, Promise<unknown>>();
+async function cleanupScheduleRecords(records: ScheduleRecord[]): Promise<void> {
+  const client = getClient();
+  const running = cleanupJobs.get(client);
+  if (running) {
+    await running;
+    return;
+  }
+  const job = (async () => {
+    const localId = await localScheduleBucketId();
+    await runScheduleCleanup(records, localId, {
+      writeGuards: async (bucketId, guards) => {
+        await client.getBucketInfo(bucketId);
+        await client.insertEvents(bucketId, guards as any);
+      },
+      deleteIfUnchanged: async record => {
+        let current: ScheduleRecord;
+        try {
+          current = (await client.getEvent(
+            record._bucket_id,
+            record.id
+          )) as unknown as ScheduleRecord;
+        } catch (error) {
+          if ((error as { response?: { status?: number } } | null)?.response?.status === 404)
+            return false;
+          throw error;
+        }
+        // A stale scan must never delete a replaced event or a tombstone.
+        if (
+          isScheduleTombstone(current) ||
+          current.data?.deleted === true ||
+          scheduleRecordUid(current) !== scheduleRecordUid(record) ||
+          new Date(current.timestamp).getTime() !== new Date(record.timestamp).getTime()
+        )
+          return false;
+        try {
+          await client.deleteEvent(record._bucket_id, record.id);
+        } catch (error) {
+          // Another tab may have completed this same cleanup after our GET.
+          if ((error as { response?: { status?: number } } | null)?.response?.status === 404)
+            return false;
+          throw error;
+        }
+        return true;
+      },
+    });
+  })();
+  cleanupJobs.set(client, job);
+  try {
+    await job;
+  } finally {
+    cleanupJobs.delete(client);
+  }
 }
 
 /**
@@ -164,7 +239,7 @@ export async function fetchSchedule(
 export function dedupeScheduleEntries(entries: ScheduleEntry[]): ScheduleEntry[] {
   const byUid = new Map<string, ScheduleEntry>();
   const rest: ScheduleEntry[] = [];
-  for (const e of entries) {
+  for (const e of visibleScheduleRecords(entries)) {
     const uid = e.data && e.data.uid;
     if (typeof uid === 'string' && uid.length > 0) {
       if (!byUid.has(uid)) byUid.set(uid, e);
@@ -224,15 +299,24 @@ export async function saveEntry(entry: ScheduleEntry): Promise<void> {
   }
 }
 
+/** Append a deletion to this machine's writable bucket, including remote entries. */
 export async function deleteEntry(entry: ScheduleEntry): Promise<void> {
   if (entry.id === undefined) {
     throw new Error('cannot delete an entry without an id (not fetched from the server?)');
   }
-  // The entry may live in the local bucket or only in a synced copy; try the
-  // bucket it was fetched from (recorded in fetchSchedule).
   if (!entry._bucket_id) throw new Error('删除日程需要来源设备信息');
-  const bucketId = entry._bucket_id;
-  await getClient().deleteEvent(bucketId, entry.id);
+  const uid = scheduleRecordUid(entry);
+  if (!uid) throw new Error('此旧日程缺少 uid，无法安全同步删除；需要先迁移旧日程的同步标识');
+  const bucketId = await ensureScheduleBucket();
+  // New timestamp + new event: append-only sync must see this operation even
+  // when the original is years old or exists only in a synced replica.
+  await getClient().insertEvents(bucketId, [
+    {
+      timestamp: new Date().toISOString(),
+      duration: 0,
+      data: { deleted: true, uid },
+    } as any,
+  ]);
 }
 
 /**
