@@ -349,3 +349,31 @@ it('reports cleanup failure separately and still hides deleted entries', async (
   expect(onCleanupError).toHaveBeenCalledWith(error);
   expect(mockClient.deleteEvent).not.toHaveBeenCalled();
 });
+
+it('cleans a future schedule on page load while retaining its local tombstone and synced original', async () => {
+  const original = {
+    id: 7,
+    timestamp: '2026-11-19T22:00:00+08:00',
+    duration: 3600,
+    data: { title: 'tonight', uid: 'future-uid' },
+  };
+  const marker = {
+    id: 8,
+    timestamp: '2026-11-19T15:40:00+08:00',
+    duration: 0,
+    data: { deleted: true, uid: 'future-uid' },
+  };
+  mockBuckets = [
+    { id: 'aw-webui-schedule_self' },
+    { id: 'aw-webui-schedule_peer-synced-from-peer' },
+  ];
+  mockClient.getEvents.mockImplementation(async id =>
+    id.endsWith('self') ? [original, marker] : [{ ...original, id: 17 }]
+  );
+  mockClient.getEvent.mockResolvedValue(original);
+  await expect(
+    fetchSchedule(moment('2026-11-16'), moment('2026-11-23'), { cleanup: true })
+  ).resolves.toEqual([]);
+  expect(mockClient.deleteEvent.mock.calls).toEqual([['aw-webui-schedule_self', 7]]);
+  expect(mockClient.insertEvents).not.toHaveBeenCalled();
+});

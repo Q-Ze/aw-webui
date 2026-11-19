@@ -41,14 +41,9 @@ export function visibleScheduleRecords<T extends ScheduleRecord>(records: T[]): 
 }
 
 export function planScheduleCleanup<T extends ScheduleRecord>(records: T[], localId: string) {
-  const latestDeletion = new Map<string, number>();
-  for (const record of records) {
-    if (!isScheduleTombstone(record)) continue;
-    const timestamp = new Date(record.timestamp).getTime();
-    const uid = scheduleRecordUid(record);
-    if (Number.isFinite(timestamp))
-      latestDeletion.set(uid, Math.max(latestDeletion.get(uid) ?? -Infinity, timestamp));
-  }
+  // The event timestamp is its scheduled start, not its creation time.
+  // Permanent UID tombstones suppress future entries and later edits alike.
+  const deletedUids = new Set(records.filter(isScheduleTombstone).map(scheduleRecordUid));
   const localGuards = new Set(
     records
       .filter(
@@ -65,8 +60,7 @@ export function planScheduleCleanup<T extends ScheduleRecord>(records: T[], loca
       record.id !== undefined &&
       record._bucket_id &&
       isLocalScheduleBucket(record._bucket_id, localId) &&
-      new Date(record.timestamp).getTime() <
-        (latestDeletion.get(scheduleRecordUid(record)) ?? -Infinity)
+      deletedUids.has(scheduleRecordUid(record))
   );
   const guards = [...new Set(deletions.map(scheduleRecordUid))].filter(
     uid => !localGuards.has(uid)

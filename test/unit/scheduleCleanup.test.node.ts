@@ -39,7 +39,7 @@ it('never hides another uid or a same-looking legacy entry', () => {
   ).toEqual(['other', undefined]);
 });
 
-it('plans only content older than its tombstone in local buckets, retaining tombstones and synced originals', () => {
+it('plans only deleted local content, retaining tombstones and synced originals', () => {
   const records = [
     live,
     marker,
@@ -47,9 +47,6 @@ it('plans only content older than its tombstone in local buckets, retaining tomb
     { ...live, data: { title: 'keep', uid: 'other' } },
   ];
   expect(planScheduleCleanup(records, localId)).toEqual({ guards: ['u'], deletions: [live] });
-  expect(
-    planScheduleCleanup([live, { ...marker, timestamp: '2026-11-18T00:00:00Z' }], localId).deletions
-  ).toEqual([]);
 });
 
 it('writes a durable local guard before removing the original payload', async () => {
@@ -104,3 +101,17 @@ it('reuses a local guard and never plans tombstone deletion, even years later', 
     deletions: [live],
   });
 });
+
+it.each(['2026-11-18T09:00:00Z', '2026-11-18T10:00:00Z', '2026-11-18T22:00:00Z'])(
+  'cleans a tombstoned UID regardless of its scheduled start: %s',
+  timestamp => {
+    const original = { ...live, timestamp };
+    const localMarker = { ...marker, _bucket_id: localId };
+    const replacement = { ...original, id: 9, data: { title: 'replacement', uid: 'new-uid' } };
+    expect(visibleScheduleRecords([original, localMarker, replacement])).toEqual([replacement]);
+    expect(planScheduleCleanup([original, localMarker, replacement], localId)).toEqual({
+      guards: [],
+      deletions: [original],
+    });
+  }
+);
