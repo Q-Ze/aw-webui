@@ -62,7 +62,7 @@ export function friendlydate(timestamp: string | Moment) {
   if (deltaSeconds <= 60) {
     return `${Math.round(deltaSeconds)}s ago`;
   }
-  return moment.duration(deltaSeconds, 'seconds').humanize(true);
+  return moment.duration(-deltaSeconds, 'seconds').humanize(true);
 }
 
 // Narrow, localized labels on desktop; unit-only ages where table space is tight.

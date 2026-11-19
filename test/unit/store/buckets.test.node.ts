@@ -135,6 +135,72 @@ describe('bucketsByDevice', () => {
   });
 });
 
+describe('device activity timestamps', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    useServerStore().$patch({
+      info: { hostname: 'self', device_id: 'local-uuid', version: '0.14.0', testing: true },
+    });
+  });
+
+  test('ignores schedule timestamps by type or prefix without hiding their buckets', () => {
+    const store = useBucketsStore();
+    const reported = new Date('2026-11-19T15:00:00Z');
+    store.update_buckets([
+      bucket({ id: 'window', last_updated: reported }),
+      bucket({
+        id: 'custom-calendar',
+        type: 'aw-webui-schedule',
+        last_updated: new Date('2026-11-20T22:00:00Z'),
+      }),
+      bucket({
+        id: 'aw-webui-schedule_erb-m2_generation-00000000-0000-4000-8000-000000000001-synced-from-peer',
+        last_updated: new Date('2026-11-21T22:00:00Z'),
+      }),
+    ]);
+    const device = store.bucketsByDevice['erb-m2'];
+    expect(device.last_updated).toEqual(reported);
+    expect(device.buckets).toHaveLength(3);
+  });
+
+  test('a schedule-only device has no reported activity timestamp', () => {
+    const store = useBucketsStore();
+    store.update_buckets([bucket({ id: 'aw-webui-schedule_erb-m2', type: 'aw-webui-schedule' })]);
+    expect(store.bucketsByDevice['erb-m2'].last_updated).toBeUndefined();
+    expect(store.bucketsByDevice['erb-m2'].buckets).toHaveLength(1);
+  });
+
+  test('a schedule-only device sorts after devices with reporting activity', () => {
+    const store = useBucketsStore();
+    store.update_buckets([
+      bucket({
+        id: 'aw-webui-schedule_scheduled',
+        hostname: 'scheduled',
+        type: 'aw-webui-schedule',
+        last_updated: new Date('2030-01-01T00:00:00Z'),
+      }),
+      bucket({ id: 'window', hostname: 'active', last_updated: new Date('2026-11-19T15:00:00Z') }),
+    ]);
+    expect(Object.keys(store.bucketsByDevice)).toEqual(['active', 'scheduled']);
+  });
+
+  test('future appointments do not promote an inactive device in device or host sorting', () => {
+    const store = useBucketsStore();
+    store.update_buckets([
+      bucket({ id: 'window-old', hostname: 'old', last_updated: new Date('2026-11-18T15:00:00Z') }),
+      bucket({
+        id: 'aw-webui-schedule_old',
+        hostname: 'old',
+        type: 'aw-webui-schedule',
+        last_updated: new Date('2030-01-01T00:00:00Z'),
+      }),
+      bucket({ id: 'window-new', hostname: 'new', last_updated: new Date('2026-11-19T15:00:00Z') }),
+    ]);
+    expect(Object.keys(store.bucketsByDevice)).toEqual(['new', 'old']);
+    expect(store.hosts).toEqual(['new', 'old']);
+  });
+});
+
 describe('desktopBucketIds', () => {
   beforeEach(() => {
     setActivePinia(createPinia());

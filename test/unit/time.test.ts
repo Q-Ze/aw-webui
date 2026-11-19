@@ -1,4 +1,8 @@
+import moment from 'moment';
+import 'moment/locale/zh-cn';
+
 import {
+  friendlydate,
   format_day_of_month,
   format_weekday_short,
   get_short_month_labels,
@@ -81,5 +85,35 @@ describe('locale-aware time labels', () => {
     if (HAS_SV_SE) {
       expect(svSEMonths).not.toEqual(enUSMonths);
     }
+  });
+});
+
+describe('friendlydate direction', () => {
+  const now = Date.parse('2026-11-19T09:00:00Z');
+  let previousLocale: string;
+  let clock: jest.SpyInstance;
+  beforeEach(() => {
+    previousLocale = moment.locale();
+    clock = jest.spyOn(moment, 'now').mockReturnValue(now);
+  });
+  afterEach(() => {
+    clock.mockRestore();
+    moment.locale(previousLocale);
+  });
+
+  test.each([
+    ['en', -300, '5 minutes ago'],
+    ['en', -7200, '2 hours ago'],
+    ['en', -172800, '2 days ago'],
+    ['zh-cn', -300, '5 分钟前'],
+    ['zh-cn', -7200, '2 小时前'],
+    ['zh-cn', -172800, '2 天前'],
+    ['en', 14795, 'in 4 hours'],
+    ['zh-cn', 14795, '4 小时后'],
+    ['en', -30, '30s ago'],
+    ['en', -60, '60s ago'],
+  ])('formats %s timestamp offset %s as %s', (locale: string, offset: number, expected: string) => {
+    moment.locale(locale);
+    expect(friendlydate(new Date(now + offset * 1000).toISOString())).toBe(expected);
   });
 });

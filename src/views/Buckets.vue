@@ -17,13 +17,13 @@ div
           b-badge.ml-2(v-if="serverStore.info && serverStore.info.hostname == device.hostname" variant="info") {{ $t('buckets.thisDevice') }}
           div.small.text-muted(v-if="device.device_id && device.hostname !== device.device_id")
             | {{ $t('ui.buckets.id') }}: {{ device.device_id }}
-          div.small(v-if="deviceHasEvents(device)")
+          div.small(v-if="device.last_updated")
             span.text-muted {{ $t('buckets.lastUpdatedInline') }}&nbsp;
             time(:class="{'text-success': isRecent(device.last_updated)}",
                  :datetime="device.last_updated",
                  :title="device.last_updated")
               | {{ device.last_updated | friendlytime }}
-          div.small.text-muted(v-else)
+          div.small.text-muted(v-else-if="!deviceHasEvents(device)")
             | {{ $t('buckets.noEventsYet') }}
       b-dropdown.kebab-dropdown(
         size="sm",

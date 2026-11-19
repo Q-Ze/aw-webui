@@ -5,6 +5,15 @@ import { defineStore } from 'pinia';
 import { getClient } from '~/util/awclient';
 import { useServerStore } from '~/stores/server';
 import { deviceHostnames } from '~/util/hostnames';
+import { SCHEDULE_PREFIX } from '~/util/scheduleProtocol';
+
+// A schedule timestamp is an appointment, not a watcher report. Keep these
+// buckets in the catalogue, but exclude them from device activity and sorting.
+function reportingBuckets(buckets: IBucket[] = []): IBucket[] {
+  return buckets.filter(
+    bucket => bucket.type !== 'aw-webui-schedule' && !bucket.id.startsWith(SCHEDULE_PREFIX)
+  );
+}
 
 function select_buckets(
   buckets: IBucket[],
@@ -52,7 +61,8 @@ export const useBucketsStore = defineStore('buckets', {
             const hasAfk = this.bucketsAFK(host).length > 0;
             return hasWindow && hasAfk ? 2 : hasWindow || hasAfk ? 1 : 0;
           },
-          host => _.max(_.map(this.bucketsByHostname[host], b => b.last_updated)) || '',
+          host =>
+            _.max(_.map(reportingBuckets(this.bucketsByHostname[host]), b => b.last_updated)) || '',
         ],
         ['desc', 'desc', 'desc']
       );
@@ -197,7 +207,7 @@ export const useBucketsStore = defineStore('buckets', {
             hostname: hostnames[0],
             hostnames,
             first_seen: _.min(_.map(d, b => b.first_seen)),
-            last_updated: _.max(_.map(d, b => b.last_updated)),
+            last_updated: _.max(_.map(reportingBuckets(d), b => b.last_updated)),
           };
         }
       );
@@ -205,7 +215,7 @@ export const useBucketsStore = defineStore('buckets', {
       // Sort by last_updated
       const sortObjectByUpdated = _.flow([
         _.toPairs,
-        pairs => _.orderBy(pairs, pair => pair[1].last_updated, ['desc']),
+        pairs => _.orderBy(pairs, pair => pair[1].last_updated || '', ['desc']),
         _.fromPairs,
       ]);
       devices = sortObjectByUpdated(devices);
